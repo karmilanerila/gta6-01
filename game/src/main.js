@@ -1,134 +1,456 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Neon Bay Heat — boot, game loop, chase camera, input, screens, save.
+// All original code. Three.js is vendored under game/vendor.
+import * as THREE from '../vendor/three.module.min.js';
+import { buildCity } from './city.js';
+import { createWorld, WEAPONS } from './world.js';
+import { createMissions } from './missions.js';
+import { createHUD } from './hud.js';
+import { createAudio } from './audio.js';
+import { clamp, damp, fmtCash } from './util.js';
 import { stageShot } from './shots.js';
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
-
+const STEP = 1 / 60;
+const SAVE_KEY = 'neonbay-save-v1';
 const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
+const shotName = params.get('shot');
 const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
+const seed = Number.isInteger(seedParam) ? seedParam : 20261121;
 
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
+const statusEl = document.getElementById('status');
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+} catch (e) {
+  statusEl.textContent = 'WebGL is not available in this browser.';
+  throw e;
+}
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+renderer.setSize(window.innerWidth, window.innerHeight);
 
-function readBest() {
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a1e33);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
+
+const audio = createAudio();
+const built = buildCity(scene, seed);
+const city = built.city;
+
+let screen = 'title'; // title | play | paused | end
+let endKind = 'wasted';
+let tod = 0.72; // late afternoon, golden hour
+let objectiveText = 'Welcome to Neon Bay — steal a car, make some cash.';
+let camYaw = 0; // behind the player (player starts facing south down Palma Drive)
+let camPitch = 0.32;
+let camDist = 8;
+let camDistOverride = 0;
+let dragging = false;
+let lastX = 0;
+let lastY = 0;
+let attractT = 0;
+
+const hooks = {
+  onBanner: (t, s) => hud.banner(t, s),
+  onObjective: (t) => { objectiveText = t; hud.setObjective(t); },
+  onMissionTick: () => {},
+  onMissionComplete: (id, reward) => { saveGame(); hud.toast('Mission complete  +' + fmtCash(reward)); },
+  onMissionFailed: () => {},
+  onMissionStart: () => {},
+  onSteal: (name) => hud.toast('Stole a ' + name + ' — the law is coming'),
+  onPedDown: () => {},
+  onPickup: (kind) => hud.toast(kind === 'cash' ? 'Cash found' : '+50 ' + kind.toUpperCase()),
+  onNoAmmo: () => hud.toast('OUT OF AMMO — find an ammo pickup'),
+  onWanted: () => {},
+  onHurt: () => hud.damageFlash(),
+  onEnterVehicle: (name) => hud.toast(name),
+  onExitVehicle: () => {},
+  onStunt: () => saveGame(),
+  onWasted: () => {
+    endKind = 'wasted';
+    screen = 'end';
+    hud.showEnd('wasted', 'The city keeps moving without you. 10% of your cash is gone.');
+    world.cash = Math.floor(world.cash * 0.9);
+    saveGame();
+  },
+  onBusted: () => {
+    endKind = 'busted';
+    screen = 'end';
+    hud.showEnd('busted', 'The NBPD has you. 10% of your cash is gone.');
+    world.cash = Math.floor(world.cash * 0.9);
+    saveGame();
+  },
+  onRespawn: () => {},
+  onTruckDestroyed: () => {},
+};
+
+const world = createWorld(scene, city, audio, hooks);
+const missions = createMissions(scene, world, city, audio, hooks);
+const hud = createHUD(hooks);
+
+// Headlight for the player's car at night.
+const headlight = new THREE.SpotLight(0xffe9b0, 0, 70, 0.55, 0.55, 1.1);
+const headTarget = new THREE.Object3D();
+scene.add(headlight);
+scene.add(headTarget);
+headlight.target = headTarget;
+
+// ---------- save / load ----------
+function saveGame() {
+  if (shotName) return; // staged screenshots never touch local storage
   try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
+    window.localStorage.setItem(SAVE_KEY, JSON.stringify({
+      cash: world.cash,
+      done: missions.done,
+    }));
+  } catch { /* storage can be off; the session still plays */ }
+}
+
+function loadGame() {
+  try {
+    const raw = window.localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (typeof s.cash === 'number') world.cash = s.cash;
+    if (Array.isArray(s.done)) missions.loadDone(s.done);
+    return s;
   } catch {
-    return 0;
+    return null;
+  }
+}
+const save = shotName ? null : loadGame();
+
+// ---------- input ----------
+const keys = {};
+const input = {
+  f: false, b: false, l: false, r: false,
+  sprint: false, jump: false, handbrake: false, nitro: false,
+  shoot: false, enter: false, weapon: 0,
+  aimDir: new THREE.Vector3(0, 0, 1),
+  aimOrigin: new THREE.Vector3(),
+};
+
+function refreshInput() {
+  input.f = !!(keys.KeyW || keys.ArrowUp);
+  input.b = !!(keys.KeyS || keys.ArrowDown);
+  input.l = !!(keys.KeyA || keys.ArrowLeft);
+  input.r = !!(keys.KeyD || keys.ArrowRight);
+  input.sprint = !!(keys.ShiftLeft || keys.ShiftRight);
+  input.nitro = input.sprint;
+  input.handbrake = !!keys.Space && !!world.player.vehicle;
+  input.jump = !!keys.Space && !world.player.vehicle;
+}
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+  if (e.repeat) return;
+  keys[e.code] = true;
+  refreshInput();
+  if (e.code === 'KeyE' || e.code === 'KeyF') input.enter = true;
+  if (e.code === 'KeyR') {
+    const name = audio.nextStation();
+    hud.toast('Radio: ' + name);
+  }
+  if (e.code === 'KeyM') {
+    audio.setMuted(!audio.isMuted);
+    hud.toast(audio.isMuted ? 'Sound muted' : 'Sound on');
+  }
+  if (e.code === 'KeyP' || e.code === 'Escape') {
+    if (screen === 'play') {
+      screen = 'paused';
+      hud.showPause(true);
+    } else if (screen === 'paused') {
+      screen = 'play';
+      hud.showPause(false);
+    }
+  }
+  const digit = /^Digit([1-4])$/.exec(e.code);
+  if (digit) input.weapon = Number(digit[1]); // 1..4 -> weapon index 0..3 in world.update
+  if (e.code === 'Enter' && screen === 'title') startPlay();
+  if (e.code === 'Enter' && screen === 'end') continueAfterEnd();
+});
+window.addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+  refreshInput();
+});
+canvas.addEventListener('mousedown', (e) => {
+  if (screen !== 'play') return;
+  if (e.button === 0) input.shoot = true;
+  if (e.button === 2) input.aim = true;
+  dragging = true;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  if (!document.pointerLockElement) canvas.requestPointerLock?.();
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 0) input.shoot = false;
+  if (e.button === 2) input.aim = false;
+  dragging = false;
+  if (document.pointerLockElement) document.exitPointerLock?.();
+});
+window.addEventListener('mousemove', (e) => {
+  if (screen !== 'play') return;
+  if (document.pointerLockElement === canvas) {
+    camYaw -= e.movementX * 0.0032;
+    camPitch = clamp(camPitch + e.movementY * 0.0022, 0.08, 1.1);
+  } else if (dragging) {
+    camYaw -= (e.clientX - lastX) * 0.005;
+    camPitch = clamp(camPitch + (e.clientY - lastY) * 0.003, 0.08, 1.1);
+    lastX = e.clientX;
+    lastY = e.clientY;
+  }
+});
+window.addEventListener('wheel', (e) => {
+  if (screen !== 'play') return;
+  const p = world.player;
+  const dir = e.deltaY > 0 ? 1 : -1;
+  const next = (p.weapon + dir + 4) % 4;
+  input.weapon = next + 1;
+}, { passive: true });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (screen === 'play') {
+      screen = 'paused';
+      hud.showPause(true);
+    }
+    saveGame();
+  }
+});
+
+function startPlay() {
+  audio.unlock();
+  hud.hideTitle();
+  screen = 'play';
+  statusEl.textContent = 'Playing Neon Bay Heat.';
+}
+function continueAfterEnd() {
+  hud.hideEnd();
+  world.respawn(endKind);
+  screen = 'play';
+}
+hud.onPlayClick(startPlay);
+hud.onContinueClick(continueAfterEnd);
+
+// Small debug hook for automated play-testing (driving state, position, wanted).
+window.__dbg = () => ({
+  screen,
+  driving: !!world.player.vehicle,
+  vehicle: world.player.vehicle?.def.name ?? null,
+  pos: [Math.round(world.playerPos().x), Math.round(world.playerPos().z)],
+  wanted: world.wanted,
+  cash: world.cash,
+  health: Math.round(world.player.health),
+  weapon: world.player.weapon,
+  ammo: world.player.ammo[world.player.weapon],
+  mission: missions.active?.def.id ?? null,
+});
+
+// ---------- camera ----------
+const camTarget = new THREE.Vector3();
+const camProbe = { x: 0, z: 0 };
+function updateCamera(dt) {
+  const p = world.player;
+  const driving = !!p.vehicle;
+  const focus = driving ? p.vehicle.pos : p.pos;
+  const speed = driving ? Math.abs(p.vehicle.speed) : Math.hypot(p.vel.x, p.vel.z);
+  if (driving) {
+    // Chase cam eases behind the car's heading (camera looks where it drives).
+    const targetYaw = p.vehicle.heading;
+    let d = targetYaw - camYaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    camYaw += d * (1 - Math.exp(-1.6 * dt));
+  } else if (speed > 1.5) {
+    const targetYaw = Math.atan2(p.vel.x, p.vel.z);
+    let d = targetYaw - camYaw;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    camYaw += d * (1 - Math.exp(-2.2 * dt));
+  }
+  const wantDist = camDistOverride > 0 ? camDistOverride : (driving ? 10.5 + speed * 0.05 : 7.5);
+  camDist = damp(camDist, wantDist, 4, dt);
+  camTarget.set(focus.x, (focus.y || 0) + (driving ? 2.6 : 2.1), focus.z);
+  const cp = Math.cos(camPitch);
+  const sp = Math.sin(camPitch);
+  let dist = camDist;
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    cx = camTarget.x - Math.sin(camYaw) * cp * dist;
+    cy = camTarget.y + sp * dist;
+    cz = camTarget.z - Math.cos(camYaw) * cp * dist;
+    camProbe.x = cx;
+    camProbe.z = cz;
+    const hit = city.collideCircle(camProbe, 0.6);
+    if (!hit) break;
+    // collideCircle pushed the probe out of the wall: adopt that spot so the
+    // camera never ends up inside a building, then try closer still.
+    cx = camProbe.x;
+    cz = camProbe.z;
+    if (attempt === 3) break;
+    dist *= 0.62;
+  }
+  camera.position.set(cx, Math.max(cy, 1.1), cz);
+  camera.lookAt(camTarget.x, camTarget.y + 0.4, camTarget.z);
+  const targetFov = driving ? 62 + clamp(speed / 60, 0, 1) * 12 + (p.vehicle.nitro ? 5 : 0) : 62;
+  camera.fov = damp(camera.fov, targetFov, 5, dt);
+  camera.updateProjectionMatrix();
+  // Aim direction for shooting (camera forward).
+  camera.getWorldDirection(input.aimDir);
+  input.aimOrigin.copy(camera.position);
+  // Headlight (cars only, not boats).
+  if (driving && p.vehicle.def.kind !== 'boat') {
+    const v = p.vehicle;
+    const nightF = 1 - clamp(Math.sin((tod - 0.25) * Math.PI * 2) * 2.2, 0, 1);
+    headlight.intensity = nightF * 220;
+    headlight.position.set(
+      v.pos.x + Math.sin(v.heading) * 2.2, 1.2, v.pos.z + Math.cos(v.heading) * 2.2,
+    );
+    headTarget.position.set(
+      v.pos.x + Math.sin(v.heading) * 40, 0.5, v.pos.z + Math.cos(v.heading) * 40,
+    );
+  } else {
+    headlight.intensity = 0;
   }
 }
 
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
+// ---------- HUD state ----------
+function hudState() {
+  const p = world.player;
+  const v = p.vehicle;
+  const hours = Math.floor(tod * 24);
+  const mins = Math.floor((tod * 24 - hours) * 60);
+  const clock = String(hours).padStart(2, '0') + ':' + String(mins).padStart(2, '0');
+  return {
+    health: p.health,
+    armor: p.armor,
+    cash: world.cash,
+    wanted: Math.round(world.wanted),
+    weaponName: WEAPONS[p.weapon].name,
+    weaponIndex: p.weapon,
+    ammo: p.ammo[p.weapon],
+    driving: !!v,
+    onFoot: !v,
+    speedKmh: v ? Math.abs(v.speed) * 2.237 : 0,
+    vehicleName: v ? v.def.name : '',
+    nitro: v && v.def.nitro ? v.nitroFuel : 0,
+    radio: audio.stationName,
+    clock,
+    missionTime: missions.active ? missions.active.timeLeft : null,
+    objective: objectiveText,
+    minimap: {
+      player: { x: world.playerPos().x, z: world.playerPos().z, heading: v ? v.heading : p.heading },
+      markers: missions.getMarkers(),
+      police: world.police.filter((c) => !c.dead).map((c) => ({ x: c.pos.x, z: c.pos.z })),
+      traffic: world.traffic.filter((t) => !t.dead).map((t) => ({ x: t.pos.x, z: t.pos.z })),
+      peds: world.peds.filter((pd) => !pd.dead).map((pd) => ({ x: pd.pos.x, z: pd.pos.z })),
+      truck: world.truck && !world.truck.dead ? { x: world.truck.pos.x, z: world.truck.pos.z } : null,
+      heli: world.heli ? { x: world.heli.group.position.x, z: world.heli.group.position.z } : null,
+    },
+  };
 }
 
-function runShot(name) {
-  const scene = stageShot(name, world);
+// ---------- main loop ----------
+let last = performance.now();
+let accumulator = 0;
+let saveTimer = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  if (screen === 'paused') {
+    renderer.render(scene, camera);
+    return;
+  }
+  accumulator += dt;
+  let steps = 0;
+  while (accumulator >= STEP && steps < 5) {
+    world.update(STEP, input, camYaw);
+    missions.update(STEP);
+    input.enter = false;
+    input.weapon = 0;
+    accumulator -= STEP;
+    steps += 1;
+  }
+  if (steps === 5) accumulator = 0;
+  tod = (tod + dt / 360) % 1;
+  const focus = world.playerPos();
+  city.update(dt, tod, focus);
+  if (screen === 'title') {
+    attractT += dt;
+    const ax = 150 + Math.sin(attractT * 0.06) * 55;
+    const az = Math.cos(attractT * 0.06) * 55;
+    camera.position.set(ax, 20 + Math.sin(attractT * 0.11) * 4, az);
+    camera.lookAt(165, 6, 0);
+  } else {
+    updateCamera(dt);
+  }
+  // Car airtime hop after stunt ramps.
+  const pv = world.player.vehicle;
+  if (pv && pv.airT > 0) {
+    pv.airT -= dt;
+    const k = 1 - pv.airT / 0.9;
+    pv.mesh.position.y = Math.sin(k * Math.PI) * 2.4;
+    pv.mesh.rotation.x = Math.sin(k * Math.PI) * -0.25;
+  }
+  audio.update();
+  hud.update(hudState());
+  saveTimer += dt;
+  if (saveTimer > 20) {
+    saveTimer = 0;
+    saveGame();
+  }
+  renderer.render(scene, camera);
+}
+
+// ---------- boot ----------
+if (shotName) {
+  // Deterministic staged screenshot: no loop, no title screen.
+  hud.hideTitle();
+  screen = 'play';
+  const G = {
+    scene, camera, renderer, world, missions, city, hud, audio,
+    input,
+    get tod() { return tod; },
+    setTod(v) { tod = v; },
+    get camYaw() { return camYaw; },
+    setCamYaw(v) { camYaw = v; },
+    setCamDist(v) { camDistOverride = v; },
+    step(dt, inp) {
+      world.update(dt, inp ?? input, camYaw);
+      missions.update(dt);
+    },
+    updateCamera,
+    render() {
+      const focus = world.playerPos();
+      city.update(0.016, tod, focus);
+      renderer.render(scene, camera);
+    },
+  };
+  stageShot(shotName, G);
   let painted = 0;
   function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
+    G.render();
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
   }
   requestAnimationFrame(paint);
-}
-
-function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
-  let accumulator = 0;
-  let last = performance.now();
-
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
-  }
-
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
-
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
-    }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
-  }
-
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
-    }
-  }
-
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
-    }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
-  }
-
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
-      }
-    } else {
-      accumulator = 0;
-    }
-    renderer.draw(world.state, screen, best);
-  }
-
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    }
-  });
-
-  announce('Block Dodger. Press Space or click to start.');
+} else {
+  const hasSave = !!save;
+  hud.showTitle(hasSave, hasSave
+    ? 'Save found: ' + fmtCash(save.cash) + ' · ' + (save.done?.length ?? 0) + ' jobs done — progress restored.'
+    : '');
+  statusEl.textContent = 'Neon Bay Heat. Press PLAY.';
+  window.__gameReady = true;
   requestAnimationFrame(frame);
 }
-
-if (shot) runShot(shot);
-else runGame();
