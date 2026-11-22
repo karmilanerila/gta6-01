@@ -83,6 +83,9 @@ export function createHUD(hooks) {
   playBtn.textContent = '▶  PLAY';
   const titleNote = mk('div', 'title-note', titleEl);
   titleNote.textContent = 'Best with sound on. Click PLAY and you are in the action.';
+  // Story progress on the title screen (Lena's jobs), updated by main.js.
+  const jobsEl = mk('div', 'title-note', titleEl);
+  jobsEl.textContent = '';
   const saveNote = mk('div', 'title-save hidden', titleEl);
 
   // Wasted / busted overlay.
@@ -196,6 +199,10 @@ export function createHUD(hooks) {
         saveNote.textContent = saveText;
       }
     },
+    // Lena's job progress on the title screen ("Jobs done: 2/5").
+    setJobsDone(done, total) {
+      jobsEl.textContent = total > 0 ? 'Jobs done: ' + done + '/' + total + ' — Lena is watching.' : '';
+    },
     hideTitle() {
       titleEl.classList.add('hidden');
     },
@@ -232,9 +239,12 @@ export function createHUD(hooks) {
       }
       radioEl.textContent = '♪ ' + s.radio;
       clockEl.textContent = s.clock;
-      if (s.missionTime != null) {
-        objectiveEl.textContent = s.objective + '   ·   ' + fmtTime(Math.max(0, s.missionTime));
-      }
+      // The objective line always shows the current objective (the staged
+      // screenshots pass a scene-specific one); the mission timer is
+      // appended only while a mission is running.
+      objectiveEl.textContent = s.missionTime != null
+        ? s.objective + '   ·   ' + fmtTime(Math.max(0, s.missionTime))
+        : s.objective;
       cross.classList.toggle('hidden', !(s.onFoot && s.weaponIndex > 0));
       dmgEl.classList.toggle('lowhp', s.health > 0 && s.health < 30);
       drawMinimap(s);

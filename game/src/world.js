@@ -534,7 +534,9 @@ export function createWorld(scene, city, audio, hooks) {
   // ---------- combat ----------
   w.shoot = (origin, dir) => {
     const p = w.player;
-    if (p.vehicle || p.health <= 0) return;
+    // Drive-by: firing from a vehicle is allowed (aim = camera forward,
+    // reduced accuracy); on foot is unchanged.
+    if (p.health <= 0) return;
     const wpn = WEAPONS[p.weapon];
     if (p.fireTimer > 0) return;
     if (p.weapon > 0 && p.ammo[p.weapon] <= 0) {
@@ -545,7 +547,7 @@ export function createWorld(scene, city, audio, hooks) {
     p.fireTimer = wpn.rate;
     if (p.weapon > 0) p.ammo[p.weapon] -= 1;
     audio.shot();
-    const muzzle = p.pos.clone();
+    const muzzle = (p.vehicle ? p.vehicle.pos : p.pos).clone();
     muzzle.y = 1.45;
     muzzle.addScaledVector(dir, 0.7);
     w.muzzleLight.position.copy(muzzle);
@@ -554,10 +556,11 @@ export function createWorld(scene, city, audio, hooks) {
     const pellets = wpn.pellets ?? 1;
     for (let pi = 0; pi < pellets; pi += 1) {
       const d = dir.clone();
-      if (pellets > 1) {
-        d.x += (Math.random() - 0.5) * 0.09;
-        d.y += (Math.random() - 0.5) * 0.09;
-        d.z += (Math.random() - 0.5) * 0.09;
+      if (pellets > 1 || p.vehicle) {
+        const sp = pellets > 1 ? 0.09 : 0.05;
+        d.x += (Math.random() - 0.5) * sp;
+        d.y += (Math.random() - 0.5) * sp;
+        d.z += (Math.random() - 0.5) * sp;
         d.normalize();
       }
       // Find nearest hit: peds, vehicles, then walls.
@@ -861,6 +864,9 @@ export function createWorld(scene, city, audio, hooks) {
     const pp = w.playerPos();
     const pv = w.player.vehicle;
     for (const ped of w.peds) {
+      // Riding in the player's taxi: the fare system owns this ped (hidden
+      // in the cab) until it drops them off.
+      if (ped.riding) continue;
       if (ped.dead) {
         ped.deadT += dt;
         if (ped.deadT > 20) {
@@ -1179,6 +1185,13 @@ export function createWorld(scene, city, audio, hooks) {
         }
       }
       if (v.health <= 0 && !v.dead) w.killVehicle(v);
+      // Drive-by: fire from the car window (camera-forward aim). The fire
+      // timer only ticks on foot otherwise, so tick it here too — without
+      // this the drive-by fires once and never again.
+      p.fireTimer = Math.max(0, p.fireTimer - dt);
+      if (input.shoot && input.aimDir) {
+        w.shoot(v.pos.clone().setY(1.6), input.aimDir);
+      }
     } else {
       updatePlayerOnFoot(dt, input, camYaw);
       if (input.shoot) {

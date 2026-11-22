@@ -115,7 +115,7 @@ function groundTexture() {
     // Port basin floor.
     g.fillRect(X(-260), Z(150), 44 * scale, 110 * scale);
     // Roads: dark asphalt strips (avenues + streets + Palma Drive).
-    g.fillStyle = '#232329';
+    g.fillStyle = '#2e2e38';
     for (const ax of WORLD.avenues) g.fillRect(X(ax - 7), Z(-260), 14 * scale, 520 * scale);
     for (const sz of WORLD.streets) g.fillRect(X(-260), Z(sz - 7), 520 * scale, 14 * scale);
     g.fillRect(X(163), Z(-260), 14 * scale, 520 * scale);
@@ -461,8 +461,11 @@ export function buildCity(scene, seed) {
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palmSpots.length);
   const crownGeo = new THREE.ConeGeometry(2.6, 3.2, 7);
   const crownMat = new THREE.MeshLambertMaterial({ color: 0x3a8a44 });
-  const crowns = new THREE.InstancedMesh(crownGeo, crownMat, palmSpots.length);
+  // Four fronds per palm instead of one cone: the crown reads as a palm,
+  // not a lollipop.
+  const crowns = new THREE.InstancedMesh(crownGeo, crownMat, palmSpots.length * 4);
   const dummy = new THREE.Object3D();
+  const upVec = new THREE.Vector3(0, 1, 0);
   palmSpots.forEach(([px, pz], i) => {
     const lean = hash2(i, 5) * 0.14 - 0.07;
     dummy.position.set(px, 3.5, pz);
@@ -470,16 +473,84 @@ export function buildCity(scene, seed) {
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     trunks.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(px, 7.6, pz);
-    dummy.rotation.set(0, hash2(i, 6) * 6.28, 0);
-    dummy.scale.set(1, 0.75, 1);
-    dummy.updateMatrix();
-    crowns.setMatrixAt(i, dummy.matrix);
+    const baseAng = hash2(i, 6) * 6.28;
+    for (let f = 0; f < 4; f += 1) {
+      const a = baseAng + (f * Math.PI) / 2;
+      const dir = new THREE.Vector3(Math.cos(a) * 0.75, 0.66, Math.sin(a) * 0.75).normalize();
+      dummy.position.set(px + dir.x * 1.2, 7 + dir.y * 1.2, pz + dir.z * 1.2);
+      dummy.quaternion.setFromUnitVectors(upVec, dir);
+      dummy.scale.set(0.6, 0.75, 0.6);
+      dummy.updateMatrix();
+      crowns.setMatrixAt(i * 4 + f, dummy.matrix);
+    }
   });
   trunks.castShadow = true;
   crowns.castShadow = true;
   scene.add(trunks);
   scene.add(crowns);
+
+  // ----- beach landmark: ferris wheel + lifeguard tower -----
+  // A slow-turning wheel on the sand gives the beach a silhouette from
+  // Palma Drive and from the water. Cabins stay upright (repositioned in
+  // city.update); the rim and spokes spin.
+  const wheel = { angle: 0, spin: null, cabins: [], x: 185, z: 150, hubY: 14, r: 9 };
+  const wheelSpin = new THREE.Group();
+  wheelSpin.position.set(wheel.x, wheel.hubY, wheel.z);
+  wheelSpin.rotation.y = Math.PI / 2; // wheel plane faces the city / beach
+  wheel.spin = wheelSpin;
+  const rimMat = new THREE.MeshBasicMaterial({ color: 0xff5da2 });
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(wheel.r, 0.35, 8, 28), rimMat);
+  wheelSpin.add(rim);
+  const spokeMat = new THREE.MeshLambertMaterial({ color: 0xd8d8e8 });
+  for (let k = 0; k < 4; k += 1) {
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.25, wheel.r * 2, 0.25), spokeMat);
+    spoke.rotation.z = (k * Math.PI) / 4;
+    wheelSpin.add(spoke);
+  }
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.9, 0.9, 2.2, 10),
+    new THREE.MeshLambertMaterial({ color: 0xffd166 }),
+  );
+  hub.rotation.x = Math.PI / 2;
+  wheelSpin.add(hub);
+  scene.add(wheelSpin);
+  const legMat = new THREE.MeshLambertMaterial({ color: 0x8a8a9a });
+  for (const side of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.6, 15.5, 0.6), legMat);
+    leg.position.set(wheel.x, 7, wheel.z + side * 2.2);
+    leg.rotation.x = side * 0.28;
+    leg.castShadow = true;
+    scene.add(leg);
+  }
+  const cabinColors = [0xff2e88, 0xffd166, 0x2eff7a, 0x3da8ff, 0xff7a2e, 0xc86bff, 0x2ee8ff, 0xff5d5d];
+  for (let i = 0; i < 8; i += 1) {
+    const cabin = new THREE.Mesh(
+      new THREE.BoxGeometry(1.7, 1.5, 1.5),
+      new THREE.MeshLambertMaterial({ color: cabinColors[i % cabinColors.length] }),
+    );
+    cabin.castShadow = true;
+    scene.add(cabin);
+    wheel.cabins.push(cabin);
+  }
+  city.colliders.push({ x0: 183, z0: 148, x1: 187, z1: 152 }); // wheel legs
+  // Lifeguard tower: platform on legs with a roof, south of the wheel.
+  const towerMat = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 });
+  const towerRed = new THREE.MeshLambertMaterial({ color: 0xc22e2e });
+  for (const [lx, lz] of [[-1.2, -1.2], [1.2, -1.2], [-1.2, 1.2], [1.2, 1.2]]) {
+    const tleg = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3, 0.3), towerMat);
+    tleg.position.set(190 + lx, 1.5, 120 + lz);
+    scene.add(tleg);
+  }
+  const platform = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.3, 3.2), towerMat);
+  platform.position.set(190, 3.1, 120);
+  scene.add(platform);
+  const chair = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 0.6), towerRed);
+  chair.position.set(190, 3.9, 120 - 1.1);
+  scene.add(chair);
+  const towerRoof = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.2, 3.6), towerRed);
+  towerRoof.position.set(190, 5.6, 120);
+  scene.add(towerRoof);
+  city.colliders.push({ x0: 188.5, z0: 118.5, x1: 191.5, z1: 121.5 }); // tower legs
 
   // ----- streetlamps (instanced) + a few real night lights -----
   const lampSpots = [];
@@ -638,6 +709,13 @@ export function buildCity(scene, seed) {
     // Water drift.
     waterTex.offset.x += dt * 0.008;
     waterTex.offset.y += dt * 0.005;
+    // Ferris wheel: slow spin, cabins stay upright on the rim.
+    wheel.angle += dt * 0.12;
+    wheel.spin.rotation.z = wheel.angle;
+    wheel.cabins.forEach((c, i) => {
+      const a = wheel.angle + (i * Math.PI) / 4;
+      c.position.set(wheel.x, wheel.hubY + Math.sin(a) * wheel.r, wheel.z + Math.cos(a) * wheel.r);
+    });
   };
 
   return { city, rng, scene, signMats, signMeshes, sun, hemi, moon, sunSprite, moonSprite, waterTex };

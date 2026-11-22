@@ -3,11 +3,14 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { buildCity } from './city.js';
 import { createWorld, WEAPONS } from './world.js';
-import { createMissions } from './missions.js';
+import { createMissions, MISSION_DEFS } from './missions.js';
 import { createHUD } from './hud.js';
 import { createAudio } from './audio.js';
 import { clamp, damp, fmtCash } from './util.js';
 import { stageShot } from './shots.js';
+import { showBriefing, completionLine } from './story.js';
+import { createTaxi } from './taxi.js';
+import { createShop } from './shop.js';
 
 const STEP = 1 / 60;
 const SAVE_KEY = 'neonbay-save-v1';
@@ -50,21 +53,38 @@ let dragging = false;
 let lastX = 0;
 let lastY = 0;
 let attractT = 0;
+// New systems, created after the world (hooks reference them by closure).
+let taxi = null;
+let shop = null;
 
 const hooks = {
   onBanner: (t, s) => hud.banner(t, s),
+  onToast: (t) => hud.toast(t),
   onObjective: (t) => { objectiveText = t; hud.setObjective(t); },
   onMissionTick: () => {},
-  onMissionComplete: (id, reward) => { saveGame(); hud.toast('Mission complete  +' + fmtCash(reward)); },
+  onMissionComplete: (id, reward) => {
+    saveGame();
+    hud.toast('Mission complete  +' + fmtCash(reward));
+    const line = completionLine(id);
+    if (line) hud.toast(line);
+    hud.setJobsDone(missions.done.length, MISSION_DEFS.length);
+  },
   onMissionFailed: () => {},
-  onMissionStart: () => {},
+  onMissionStart: (id) => {
+    if (shotName) return; // staged screenshots never show the briefing card
+    const def = MISSION_DEFS.find((d) => d.id === id);
+    if (def) showBriefing(def);
+  },
   onSteal: (name) => hud.toast('Stole a ' + name + ' — the law is coming'),
   onPedDown: () => {},
   onPickup: (kind) => hud.toast(kind === 'cash' ? 'Cash found' : '+50 ' + kind.toUpperCase()),
   onNoAmmo: () => hud.toast('OUT OF AMMO — find an ammo pickup'),
   onWanted: () => {},
   onHurt: () => hud.damageFlash(),
-  onEnterVehicle: (name) => hud.toast(name),
+  onEnterVehicle: (name) => {
+    hud.toast(name);
+    if (name === 'City Cab' && taxi) taxi.onEnterTaxi();
+  },
   onExitVehicle: () => {},
   onStunt: () => saveGame(),
   onWasted: () => {
@@ -88,6 +108,8 @@ const hooks = {
 const world = createWorld(scene, city, audio, hooks);
 const missions = createMissions(scene, world, city, audio, hooks);
 const hud = createHUD(hooks);
+taxi = createTaxi(scene, world, city, audio, hooks);
+shop = createShop(scene, world, city, audio, hooks);
 
 // Headlight for the player's car at night.
 const headlight = new THREE.SpotLight(0xffe9b0, 0, 70, 0.55, 0.55, 1.1);
@@ -345,10 +367,11 @@ function hudState() {
     radio: audio.stationName,
     clock,
     missionTime: missions.active ? missions.active.timeLeft : null,
-    objective: objectiveText,
+    // A running fare is the objective when no mission is active.
+    objective: missions.active ? objectiveText : (taxi?.fareText() ?? objectiveText),
     minimap: {
       player: { x: world.playerPos().x, z: world.playerPos().z, heading: v ? v.heading : p.heading },
-      markers: missions.getMarkers(),
+      markers: [...missions.getMarkers(), ...taxi.getMarkers(), ...shop.getMarkers()],
       police: world.police.filter((c) => !c.dead).map((c) => ({ x: c.pos.x, z: c.pos.z })),
       traffic: world.traffic.filter((t) => !t.dead).map((t) => ({ x: t.pos.x, z: t.pos.z })),
       peds: world.peds.filter((pd) => !pd.dead).map((pd) => ({ x: pd.pos.x, z: pd.pos.z })),
@@ -376,6 +399,8 @@ function frame(now) {
   while (accumulator >= STEP && steps < 5) {
     world.update(STEP, input, camYaw);
     missions.update(STEP);
+    taxi.update(STEP);
+    shop.update(STEP);
     input.enter = false;
     input.weapon = 0;
     accumulator -= STEP;
@@ -450,6 +475,7 @@ if (shotName) {
   hud.showTitle(hasSave, hasSave
     ? 'Save found: ' + fmtCash(save.cash) + ' · ' + (save.done?.length ?? 0) + ' jobs done — progress restored.'
     : '');
+  hud.setJobsDone(missions.done.length, MISSION_DEFS.length);
   statusEl.textContent = 'Neon Bay Heat. Press PLAY.';
   window.__gameReady = true;
   requestAnimationFrame(frame);
