@@ -1,351 +1,290 @@
-// Missions for Neon Bay Heat: 6 escalating jobs + stunt jumps, all driven
-// by beacons and rings in the world. State machine only; rendering is plain
-// three.js primitives.
-import * as THREE from '../vendor/three.module.min.js';
-import { clamp, fmtCash } from './util.js';
+// Sunset Keys — six missions: a race, a delivery, a getaway, a heist, a boat run
+// and a neon trial. Each is a small state machine with clear objectives and a payout.
+// Written fresh for round 5.
+import { clamp, dist, fmtCash } from './util.js';
+import { makeVehicle } from './vehicles.js';
+import { addWanted } from './police.js';
 
-const RING_COLOR = 0xff2e88;
-const BEACON_COLOR = 0xff5da2;
-
-function makeRingMesh(color) {
-  const group = new THREE.Group();
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(4.2, 0.4, 10, 28),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
-  );
-  ring.rotation.y = Math.PI / 2;
-  ring.position.y = 3.2;
-  group.add(ring);
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.7, 0.7, 26, 8, 1, true),
-    new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false,
-    }),
-  );
-  beam.position.y = 13;
-  group.add(beam);
-  return group;
-}
-
-function makeBeaconMesh(color) {
-  const group = new THREE.Group();
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.1, 1.6, 30, 10, 1, true),
-    new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false,
-    }),
-  );
-  beam.position.y = 15;
-  group.add(beam);
-  const marker = new THREE.Mesh(
-    new THREE.OctahedronGeometry(1.1),
-    new THREE.MeshBasicMaterial({ color }),
-  );
-  marker.position.y = 3.4;
-  group.add(marker);
-  return { group, marker };
-}
-
-export const MISSION_DEFS = [
+export const MISSIONS = [
   {
-    id: 'race', name: 'SUNSET SPRINT', desc: 'Street race: hit all 8 rings before the clock runs out.',
-    reward: 1500, timeLimit: 150,
-    beacon: { x: 170, z: -180 },
-    rings: [[170, -120], [170, 0], [170, 120], [120, 120], [40, 120], [-40, 120], [-40, 40], [-40, -40]],
+    id: 'sprint', name: 'Sunset Sprint', payout: 1800,
+    desc: 'Race through 5 checkpoints across the Keys before the clock runs out.',
+    start: { x: 1200, y: 1200 },
+    time: 150,
+    stages: [
+      { kind: 'goto', x: 400, y: 300, r: 70, text: 'Checkpoint 1/5 — North Gate' },
+      { kind: 'goto', x: 2800, y: 300, r: 70, text: 'Checkpoint 2/5 — East Highway' },
+      { kind: 'goto', x: 2800, y: 2100, r: 70, text: 'Checkpoint 3/5 — South Beach' },
+      { kind: 'goto', x: 400, y: 2100, r: 70, text: 'Checkpoint 4/5 — Marina Bend' },
+      { kind: 'goto', x: 1600, y: 1200, r: 70, text: 'Finish — Downtown Plaza' },
+    ],
   },
   {
-    id: 'getaway', name: 'HOT PURSUIT', desc: 'Lose the heat: hit 3 checkpoints with a 2-star wanted level.',
-    reward: 2000, timeLimit: 120,
-    beacon: { x: 120, z: -120 },
-    rings: [[120, -120], [-40, -120], [-40, -40]],
+    id: 'delivery', name: 'Pier Run', payout: 1500,
+    desc: 'Pick up the parcel at the marina and run it to the end of the pier. Fast.',
+    start: { x: 2960, y: 2180 },
+    time: 110,
+    stages: [
+      { kind: 'goto', x: 2960, y: 2180, r: 70, text: 'Pick up the parcel at the marina' },
+      { kind: 'goto', x: 3480, y: 1200, r: 70, text: 'Deliver it to the end of the pier' },
+    ],
   },
   {
-    id: 'heist', name: 'HARBOR HEIST', desc: 'Stop the armored truck, grab the cash, deliver it to Lena.',
-    reward: 3500, timeLimit: 240,
-    beacon: { x: -200, z: 120 },
-    rings: [],
+    id: 'getaway', name: 'Clean Getaway', payout: 2000,
+    desc: 'The patrol is on you. Stay free for 45 seconds, then vanish at the safehouse.',
+    start: { x: 1600, y: 900 },
+    time: 0,
+    stages: [
+      { kind: 'survive', seconds: 45, text: 'Stay free — lose the patrol' },
+      { kind: 'goto', x: 900, y: 300, r: 80, text: 'Reach the safehouse' },
+    ],
   },
   {
-    id: 'boat', name: "SMUGGLER'S RUN", desc: 'Take the boat from the pier, round 5 buoys, come home.',
-    reward: 3000, timeLimit: 210,
-    beacon: { x: 196, z: 60 },
-    rings: [[228, 0], [242, -80], [232, -160], [246, 120], [228, 180]],
+    id: 'heist', name: 'Vault Truck', payout: 3500,
+    desc: 'Ram the armored truck until its vault pops, then grab the cash.',
+    start: { x: 2000, y: 300 },
+    time: 0,
+    stages: [
+      { kind: 'ram', text: 'Ram the Vault Truck until it stops' },
+      { kind: 'collect', r: 70, text: 'Grab the cash from the truck' },
+    ],
   },
   {
-    id: 'trial', name: 'NIGHT SHIFT', desc: 'Downtown time trial: 6 rings, 100 seconds, no excuses.',
-    reward: 1200, timeLimit: 100,
-    beacon: { x: -120, z: -120 },
-    rings: [[-120, -120], [-40, -120], [-40, -40], [-120, -40], [-200, -40], [-200, -120]],
+    id: 'boat', name: 'Island Hop', payout: 2800,
+    desc: 'Take the runabout from the marina dock, round all four buoys, come home.',
+    start: { x: 3300, y: 1850 },
+    time: 180,
+    stages: [
+      { kind: 'goto', x: 3400, y: 900, r: 80, text: 'Buoy 1/4 — North Reach', boat: true },
+      { kind: 'goto', x: 3520, y: 1400, r: 80, text: 'Buoy 2/4 — East Point', boat: true },
+      { kind: 'goto', x: 3380, y: 1950, r: 80, text: 'Buoy 3/4 — South Shoal', boat: true },
+      { kind: 'goto', x: 3480, y: 500, r: 80, text: 'Buoy 4/4 — Coral Head', boat: true },
+      { kind: 'goto', x: 3300, y: 1850, r: 80, text: 'Back to the marina dock', boat: true },
+    ],
   },
   {
-    id: 'neon', name: 'NEON RUN', desc: 'Night delivery: 4 drops across the city, 160 seconds, cops awake.',
-    reward: 2200, timeLimit: 160,
-    beacon: { x: 170, z: 100 },
-    rings: [[120, 200], [-40, 200], [-200, 40], [-120, -200]],
+    id: 'neon', name: 'Neon Gates', payout: 2200,
+    desc: 'Thread eight neon gates through downtown before the timer dies.',
+    start: { x: 1200, y: 900 },
+    time: 120,
+    stages: [
+      { kind: 'goto', x: 1200, y: 900, r: 60, text: 'Gate 1/8' },
+      { kind: 'goto', x: 1600, y: 900, r: 60, text: 'Gate 2/8' },
+      { kind: 'goto', x: 2000, y: 900, r: 60, text: 'Gate 3/8' },
+      { kind: 'goto', x: 2000, y: 1200, r: 60, text: 'Gate 4/8' },
+      { kind: 'goto', x: 2000, y: 1500, r: 60, text: 'Gate 5/8' },
+      { kind: 'goto', x: 1600, y: 1500, r: 60, text: 'Gate 6/8' },
+      { kind: 'goto', x: 1200, y: 1500, r: 60, text: 'Gate 7/8' },
+      { kind: 'goto', x: 1200, y: 1200, r: 60, text: 'Gate 8/8 — finish' },
+    ],
   },
 ];
 
-const TRUCK_LOOP = [[-200, 120], [-200, -40], [-40, -40], [-40, 120]];
-const DROP_OFF = { x: 120, z: 200 };
+export function missionById(id) {
+  return MISSIONS.find((m) => m.id === id) || null;
+}
 
-export function createMissions(scene, world, city, audio, hooks) {
+export function startMission(G, id) {
+  const def = missionById(id);
+  if (!def || G.mission) return false;
   const m = {
-    scene, world, city, audio, hooks,
-    defs: MISSION_DEFS,
-    done: [],
-    active: null,
-    beacon: null,
-    beaconDef: null,
-    rings: [],
-    time: 0,
-    stunts: [],
-    stuntCooldown: {},
+    def, stage: 0,
+    timer: def.time,
+    surviveT: 0,
+    truck: null,
+    boat: null,
+    startedAt: G.time,
   };
-
-  // Stunt jump ramps.
-  const rampSpots = [[170, -100], [120, -160], [-40, 200]];
-  const rampGeo = new THREE.BoxGeometry(4.5, 0.7, 7);
-  const rampMat = new THREE.MeshLambertMaterial({ color: 0xe07b28 });
-  const rampMat2 = new THREE.MeshLambertMaterial({ color: 0x222222 });
-  for (const [rx, rz] of rampSpots) {
-    const ramp = new THREE.Mesh(rampGeo, rampMat);
-    ramp.position.set(rx, 0.35, rz);
-    ramp.rotation.x = -0.32;
-    ramp.castShadow = true;
-    scene.add(ramp);
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.12, 0.8), rampMat2);
-    stripe.position.set(rx, 0.75, rz - 2.6);
-    stripe.rotation.x = -0.32;
-    scene.add(stripe);
-    m.stunts.push({ x: rx, z: rz, cooldown: 0 });
+  if (id === 'getaway') {
+    addWanted(G, 3, 'The patrol is on you');
   }
-
-  function clearRings() {
-    for (const r of m.rings) scene.remove(r.mesh);
-    m.rings = [];
+  if (id === 'heist') {
+    const truck = makeVehicle('truck', 2000, 300, Math.PI / 2, { mission: 'heist' });
+    truck.target = { x: 2800, y: 300 };
+    G.cars.push(truck);
+    m.truck = truck;
   }
-
-  function showRings(points, fromIdx) {
-    clearRings();
-    points.forEach(([x, z], i) => {
-      if (i < fromIdx) return;
-      const mesh = makeRingMesh(i === fromIdx ? RING_COLOR : 0x37e0c8);
-      mesh.position.set(x, 0, z);
-      scene.add(mesh);
-      m.rings.push({ mesh, x, z, passed: false });
-    });
+  if (id === 'boat') {
+    const boat = makeVehicle('boat', 3300, 1850, 0, { mission: 'boat' });
+    G.cars.push(boat);
+    m.boat = boat;
   }
+  G.mission = m;
+  G.message = def.name + ' — ' + def.desc;
+  G.messageT = 4;
+  if (G.audio) G.audio.jingle('start');
+  return true;
+}
 
-  function setBeacon(def) {
-    m.clearBeacon();
-    if (!def) return;
-    const built = makeBeaconMesh(BEACON_COLOR);
-    built.group.position.set(def.beacon.x, 0, def.beacon.z);
-    scene.add(built.group);
-    m.beacon = { group: built.group, marker: built.marker };
-    m.beaconDef = def;
+export function abortMission(G, reason) {
+  if (!G.mission) return;
+  const name = G.mission.def.name;
+  if (G.mission.truck && !G.mission.truck.dead) {
+    G.mission.truck.dead = true;
   }
+  G.mission = null;
+  G.message = name + ' failed — ' + (reason || 'try again');
+  G.messageT = 3.5;
+  if (G.audio) G.audio.jingle('fail');
+}
 
-  m.clearBeacon = () => {
-    if (m.beacon) {
-      scene.remove(m.beacon.group);
-      m.beacon = null;
-      m.beaconDef = null;
-    }
-  };
+export function completeMission(G) {
+  const m = G.mission;
+  if (!m) return;
+  const def = m.def;
+  G.player.cash += def.payout;
+  G.missionsDone[def.id] = true;
+  G.mission = null;
+  G.message = def.name + ' complete! +' + fmtCash(def.payout);
+  G.messageT = 4;
+  G.completedFlash = 2;
+  if (G.audio) G.audio.jingle('win');
+  // Save progress.
+  try {
+    const raw = window.localStorage.getItem('sunset-keys-save-v5');
+    const s = raw ? JSON.parse(raw) : {};
+    s.cash = Math.floor(G.player.cash);
+    s.done = G.missionsDone;
+    window.localStorage.setItem('sunset-keys-save-v5', JSON.stringify(s));
+  } catch (e) {
+    // Storage can be off; the session still plays.
+  }
+}
 
-  m.nextDef = () => m.defs.find((d) => !m.done.includes(d.id)) ?? null;
+export function currentObjective(G) {
+  const m = G.mission;
+  if (!m) return null;
+  return m.def.stages[m.stage] || null;
+}
 
-  m.refreshBeacon = () => {
-    if (m.active) {
-      m.clearBeacon();
+// "Stage 2/5" for the HUD, or '' when no mission is running.
+export function missionStageText(G) {
+  const m = G.mission;
+  if (!m) return '';
+  const n = m.def.stages.length;
+  const cur = Math.min(m.stage + 1, n);
+  return 'Stage ' + cur + '/' + n;
+}
+
+export function updateMission(G, dt) {
+  const m = G.mission;
+  if (!m) return;
+  // Timed missions.
+  if (m.def.time > 0) {
+    m.timer -= dt;
+    if (m.timer <= 0) {
+      abortMission(G, 'time ran out');
       return;
     }
-    setBeacon(m.nextDef());
-  };
-
-  function banner(title, sub) {
-    if (hooks.onBanner) hooks.onBanner(title, sub);
   }
-
-  function objective(text) {
-    if (hooks.onObjective) hooks.onObjective(text);
+  const obj = currentObjective(G);
+  if (!obj) {
+    completeMission(G);
+    return;
   }
-
-  function failMission(reason) {
-    if (!m.active) return;
-    const def = m.active.def;
-    clearRings();
-    m.active = null;
-    audio.blip();
-    banner('MISSION FAILED', reason);
-    if (hooks.onMissionFailed) hooks.onMissionFailed(def.id, reason);
-    m.refreshBeacon();
-  }
-
-  function completeMission() {
-    const a = m.active;
-    if (!a) return;
-    const def = a.def;
-    m.done.push(def.id);
-    world.cash += def.reward;
-    audio.missionDone();
-    audio.cash();
-    banner('MISSION PASSED', def.name + '  ·  +' + fmtCash(def.reward));
-    if (hooks.onMissionComplete) hooks.onMissionComplete(def.id, def.reward);
-    clearRings();
-    m.active = null;
-    m.refreshBeacon();
-  }
-
-  function startMission(def) {
-    m.clearBeacon();
-    const a = { def, stage: 0, ringIdx: 0, timeLeft: def.timeLimit, truck: null, collected: false };
-    m.active = a;
-    audio.blip();
-    if (def.id === 'race' || def.id === 'trial' || def.id === 'boat' || def.id === 'neon') {
-      showRings(def.rings, 0);
-      objective(def.name + ': ring ' + 1 + ' of ' + def.rings.length);
-    } else if (def.id === 'getaway') {
-      world.wanted = 2;
-      world.crimeTimer = 0;
-      showRings(def.rings, 0);
-      objective(def.name + ': checkpoint 1 of ' + def.rings.length + ' — stay ahead of the law');
-    } else if (def.id === 'heist') {
-      const truck = world.spawnTruck(-200, 120, Math.PI);
-      truck.loop = TRUCK_LOOP;
-      truck.wp = 0;
-      a.truck = truck;
-      objective(def.name + ': stop the armored truck');
-    }
-    banner(def.name, def.desc);
-    if (hooks.onMissionStart) hooks.onMissionStart(def.id);
-  }
-
-  m.update = (dt) => {
-    m.time += dt;
-    if (m.beacon) {
-      m.beacon.marker.rotation.y += dt * 2.2;
-      m.beacon.marker.position.y = 3.4 + Math.sin(m.time * 2.4) * 0.5;
-      const pp = world.playerPos();
-      const bd = Math.hypot(pp.x - m.beaconDef.beacon.x, pp.z - m.beaconDef.beacon.z);
-      if (bd < 6) startMission(m.beaconDef);
-    }
-    for (const r of m.rings) r.mesh.rotation.y += dt * 0.5;
-    const pv = world.player.vehicle;
-    for (const s of m.stunts) {
-      s.cooldown = Math.max(0, s.cooldown - dt);
-      if (!pv || s.cooldown > 0) continue;
-      const d = Math.hypot(pv.pos.x - s.x, pv.pos.z - s.z);
-      if (d < 3.5 && Math.abs(pv.speed) > 22) {
-        s.cooldown = 15;
-        pv.airT = 0.9;
-        world.cash += 250;
-        audio.cash();
-        banner('STUNT JUMP', '+$250 — nice air');
-        if (hooks.onStunt) hooks.onStunt();
+  const p = G.player;
+  if (obj.kind === 'goto') {
+    const d = dist(p.x, p.y, obj.x, obj.y);
+    if (d < obj.r) {
+      m.stage += 1;
+      if (G.audio) G.audio.jingle('checkpoint');
+      if (m.stage >= m.def.stages.length) completeMission(G);
+      else {
+        G.message = m.def.stages[m.stage].text;
+        G.messageT = 2.5;
       }
     }
-    const a = m.active;
-    if (!a) return;
-    a.timeLeft -= dt;
-    if (a.timeLeft <= 0) {
-      failMission('Out of time.');
-      return;
+  } else if (obj.kind === 'survive') {
+    m.surviveT += dt;
+    if (m.surviveT >= obj.seconds) {
+      m.stage += 1;
+      G.message = m.def.stages[m.stage].text;
+      G.messageT = 2.5;
+      if (G.audio) G.audio.jingle('checkpoint');
     }
-    // One warning when the clock gets short — a missed deadline is the
-    // most common way to lose a job.
-    if (a.timeLeft <= 10 && !a.warned) {
-      a.warned = true;
-      banner('HURRY', '10 seconds left on ' + a.def.name);
-      audio.blip();
+  } else if (obj.kind === 'ram') {
+    if (m.truck && m.truck.dead) {
+      m.stage += 1;
+      G.message = m.def.stages[m.stage].text;
+      G.messageT = 2.5;
+      if (G.audio) G.audio.jingle('checkpoint');
     }
-    const pp = world.playerPos();
-    if (a.def.id === 'race' || a.def.id === 'trial' || a.def.id === 'boat' || a.def.id === 'getaway' || a.def.id === 'neon') {
-      const ring = m.rings[0];
-      if (ring) {
-        const d = Math.hypot(pp.x - ring.x, pp.z - ring.z);
-        if (d < 5.5) {
-          a.ringIdx += 1;
-          audio.cash();
-          const def = a.def;
-          if (a.ringIdx >= def.rings.length) {
-            completeMission();
-            return;
-          }
-          showRings(def.rings, a.ringIdx);
-          objective(def.name + ': ring ' + (a.ringIdx + 1) + ' of ' + def.rings.length);
-        }
-      }
-      if (a.def.id === 'boat' && !world.player.inBoat && a.ringIdx > 0) {
-        a.boatGrace = (a.boatGrace ?? 0) + dt;
-        if (a.boatGrace > 10) failMission('You lost the boat.');
-      } else a.boatGrace = 0;
-    } else if (a.def.id === 'heist') {
-      const t = a.truck;
-      if (!t || t.dead) {
-        failMission('The truck was destroyed.');
-        return;
-      }
-      if (a.stage === 0) {
-        if (t.health <= 150) {
-          t.loop = null;
-          t.cruise = 0;
-          a.stage = 1;
-          objective('HEIST: grab the cash from the truck (get close)');
-          banner('TRUCK STOPPED', 'Grab the cash');
-        } else {
-          objective('HEIST: stop the truck — ' + Math.max(0, Math.round(t.health)) + ' HP');
-        }
-      } else if (a.stage === 1) {
-        const d = Math.hypot(pp.x - t.pos.x, pp.z - t.pos.z);
-        if (d < 5 && !world.player.vehicle) {
-          a.collected = true;
-          a.stage = 2;
-          world.wanted = Math.max(world.wanted, 3);
-          world.crimeTimer = 0;
-          const mesh = makeRingMesh(0xffd166);
-          mesh.position.set(DROP_OFF.x, 0, DROP_OFF.z);
-          scene.add(mesh);
-          m.rings.push({ mesh, x: DROP_OFF.x, z: DROP_OFF.z, passed: false });
-          objective('HEIST: deliver the cash to Lena at the drop-off');
-          banner('CASH GRABBED', 'Lose the cops, reach the drop-off');
-        } else if (d < 5) {
-          objective('HEIST: get out of the car to grab the cash');
-        }
-      } else if (a.stage === 2) {
-        const d = Math.hypot(pp.x - DROP_OFF.x, pp.z - DROP_OFF.z);
-        if (d < 6) {
-          world.truck = null;
-          const vi = world.vehicles.indexOf(t);
-          if (vi >= 0) world.vehicles.splice(vi, 1);
-          scene.remove(t.mesh);
-          completeMission();
-          return;
-        }
-      }
+  } else if (obj.kind === 'collect') {
+    if (m.truck && dist(p.x, p.y, m.truck.x, m.truck.y) < obj.r) {
+      completeMission(G);
     }
-    if (hooks.onMissionTick) hooks.onMissionTick(a.timeLeft, a.def);
-  };
+  }
+}
 
-  m.getMarkers = () => {
-    const out = [];
-    if (m.beaconDef) out.push({ x: m.beaconDef.beacon.x, z: m.beaconDef.beacon.z, color: '#ff5da2', kind: 'mission' });
-    for (const r of m.rings) out.push({ x: r.x, z: r.z, color: '#ff2e88', kind: 'ring' });
-    return out;
-  };
+// The mission start marker the player is standing on, if any.
+export function missionAt(G) {
+  if (G.mission) return null;
+  for (const def of MISSIONS) {
+    if (G.missionsDone[def.id]) continue;
+    if (dist(G.player.x, G.player.y, def.start.x, def.start.y) < 90) return def;
+  }
+  return null;
+}
 
-  m.loadDone = (ids) => {
-    m.done = ids.filter((id) => m.defs.some((d) => d.id === id));
-    m.refreshBeacon();
-  };
-
-  // Staging helper for screenshots: start a mission immediately.
-  m.debugStart = (id) => {
-    const def = m.defs.find((d) => d.id === id);
-    if (def) startMission(def);
-  };
-
-  m.refreshBeacon();
-  return m;
+export function drawMissionMarkers(ctx, G, view) {
+  // Start markers for missions not yet done.
+  for (const def of MISSIONS) {
+    if (G.mission || G.missionsDone[def.id]) continue;
+    if (def.start.x < view.x0 - 120 || def.start.x > view.x1 + 120 || def.start.y < view.y0 - 120 || def.start.y > view.y1 + 120) continue;
+    const pulse = 1 + 0.15 * Math.sin(G.time * 4);
+    ctx.save();
+    ctx.translate(def.start.x, def.start.y);
+    ctx.scale(pulse, pulse);
+    ctx.strokeStyle = '#ffe600';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 34, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#ffe600';
+    ctx.font = 'bold 20px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('!', 0, 7);
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = '#ffe600';
+    ctx.font = 'bold 12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(def.name, def.start.x, def.start.y - 44);
+    ctx.restore();
+  }
+  // Current objective.
+  const obj = currentObjective(G);
+  if (obj && obj.x !== undefined) {
+    const pulse = 1 + 0.2 * Math.sin(G.time * 6);
+    ctx.save();
+    ctx.translate(obj.x, obj.y);
+    ctx.scale(pulse, pulse);
+    ctx.strokeStyle = '#00ffa3';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, obj.r * 0.7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(0,255,163,0.12)';
+    ctx.beginPath();
+    ctx.arc(0, 0, obj.r * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // A beam of light so the objective is visible from afar.
+    ctx.save();
+    ctx.globalAlpha = 0.4 + 0.15 * Math.sin(G.time * 6);
+    ctx.fillStyle = '#00ffa3';
+    ctx.fillRect(obj.x - 5, obj.y - 320, 10, 320);
+    ctx.restore();
+  }
+  // The truck, when it is the heist target.
+  const m = G.mission;
+  if (m && m.truck && !m.truck.dead) {
+    ctx.save();
+    ctx.strokeStyle = '#ff2e63';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(m.truck.x, m.truck.y, 52 + 4 * Math.sin(G.time * 5), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
