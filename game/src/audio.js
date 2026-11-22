@@ -1,24 +1,31 @@
-// Procedural Web Audio: no audio files, everything synthesized.
-// Three radio stations (synthwave / hip-hop / latin) run on a lookahead step
-// sequencer, plus engine hum, tire screech, sirens, gunshots and UI blips.
-// All nodes are created lazily on the first user gesture (PLAY click).
+// Procedural Web Audio for Neon Bay Heat: no audio files, everything is
+// synthesized. Three radio stations run on a lookahead step sequencer, plus
+// engine hum, tire screech, sirens, gunshots and UI blips. All nodes are
+// created lazily on the first user gesture (PLAY click).
 import { clamp } from './util.js';
 
+// Each station: name, tempo, chord roots (one per bar, MIDI), and its lead /
+// bass patterns as semitone offsets (null = rest).
 const STATIONS = [
-  { name: 'WAVE 98 · SYNTHWAVE', bpm: 104 },
-  { name: 'BASSLINE FM · HIP-HOP', bpm: 92 },
-  { name: 'CALIENTE · LATIN', bpm: 112 },
+  {
+    name: 'WAVE 98 · SYNTHWAVE', bpm: 104,
+    roots: [45, 45, 43, 41],
+    lead: [0, 3, 7, 10, 12, 10, 7, 3],
+    bass: [0, 0, 7, 5],
+  },
+  {
+    name: 'BASSLINE FM · HIP-HOP', bpm: 92,
+    roots: [43, 43, 41, 40],
+    lead: [0, null, 0, 3, null, 5, 3, 0],
+    bass: [0, 0, 0, 10],
+  },
+  {
+    name: 'CALIENTE · LATIN', bpm: 112,
+    roots: [45, 48, 43, 41],
+    lead: [0, 3, 7, 12, 10, 7, 5, 3],
+    bass: [0, 5, 7, 10],
+  },
 ];
-
-// Minor-scale synthwave arpeggio + driving bass.
-const SYNTH_LEAD = [0, 3, 7, 10, 12, 10, 7, 3];
-const SYNTH_BASS = [0, 0, 7, 5];
-// Boom-bap: sparse minor riff over a heavy kick pattern.
-const HIPHOP_LEAD = [0, null, 0, 3, null, 5, null, 3];
-const HIPHOP_BASS = [0, 0, 0, 10];
-// Latin montuno over a clave rhythm.
-const LATIN_LEAD = [0, 3, 7, 12, 10, 7, 3, 5];
-const LATIN_BASS = [0, 5, 7, 5];
 
 export function createAudio() {
   let ctx = null;
@@ -124,36 +131,40 @@ export function createAudio() {
     src.start(t);
   }
 
+  // One 16th-note step of the current station's pattern.
   function scheduleStep(s, t) {
     const st = STATIONS[station];
-    const bar = Math.floor(s / 16) % 4;
-    const root = [45, 45, 43, 41][bar]; // A2 A2 G2 F2 progression
+    const bar = Math.floor(s / 16) % st.roots.length;
+    const root = st.roots[bar];
     const beat = s % 16;
+    const leadNote = st.lead[s % st.lead.length];
+    const bassNote = st.bass[Math.floor(s / 4) % st.bass.length];
     if (station === 0) {
       // Synthwave: four-on-the-floor kick, hats, arpeggio, bass.
       if (beat % 4 === 0) kick(t, 0.9);
       if (beat % 4 === 2) hat(t, 0.16, false);
       if (beat % 2 === 0) hat(t, 0.08, false);
-      const n = SYNTH_LEAD[s % 8];
-      blip(noteFreq(root + 24, n), 0.22, 'sawtooth', 0.1, t);
-      if (beat % 4 === 0) blip(noteFreq(root, SYNTH_BASS[(s / 4 | 0) % 4]), 0.5, 'square', 0.16, t);
+      blip(noteFreq(root + 24, leadNote), 0.22, 'sawtooth', 0.1, t);
+      if (beat % 4 === 0) blip(noteFreq(root, bassNote), 0.5, 'square', 0.16, t);
       if (beat === 0) blip(noteFreq(root + 12, 0), 1.6, 'triangle', 0.05, t);
     } else if (station === 1) {
       // Hip-hop: boom-bap kick/snare-ish, sparse riff.
       if (beat === 0 || beat === 7 || beat === 10) kick(t, 0.95);
-      if (beat === 4 || beat === 12) hat(t, 0.5, true); // snare-ish noise burst
+      if (beat === 4 || beat === 12) hat(t, 0.5, true);
       if (beat % 2 === 1) hat(t, 0.07, false);
-      const n = HIPHOP_LEAD[s % 8];
-      if (n !== null && n !== undefined) blip(noteFreq(root + 24, n), 0.3, 'square', 0.07, t);
-      if (beat % 4 === 0) blip(noteFreq(root - 12, HIPHOP_BASS[(s / 4 | 0) % 4]), 0.55, 'sine', 0.3, t);
+      if (leadNote !== null && leadNote !== undefined) {
+        blip(noteFreq(root + 24, leadNote), 0.3, 'square', 0.07, t);
+      }
+      if (beat % 4 === 0) blip(noteFreq(root - 12, bassNote), 0.55, 'sine', 0.3, t);
     } else {
       // Latin: clave + montuno + tumbao bass.
-      if (beat === 0 || beat === 3 || beat === 6 || beat === 10 || beat === 12) blip(1900, 0.05, 'square', 0.12, t);
+      if (beat === 0 || beat === 3 || beat === 6 || beat === 10 || beat === 12) {
+        blip(1900, 0.05, 'square', 0.12, t);
+      }
       if (beat % 4 === 0) kick(t, 0.55);
       if (beat % 2 === 0) hat(t, 0.1, false);
-      const n = LATIN_LEAD[s % 8];
-      blip(noteFreq(root + 24, n), 0.18, 'triangle', 0.14, t);
-      if (beat === 0 || beat === 6 || beat === 11) blip(noteFreq(root, LATIN_BASS[(s / 4 | 0) % 4]), 0.4, 'sine', 0.26, t);
+      blip(noteFreq(root + 24, leadNote), 0.18, 'triangle', 0.14, t);
+      if (beat === 0 || beat === 6 || beat === 11) blip(noteFreq(root, bassNote), 0.4, 'sine', 0.26, t);
     }
   }
 
@@ -230,6 +241,29 @@ export function createAudio() {
     screechSrc.start();
   }
 
+  // One-shot noise burst through a lowpass (shots, crashes, explosions).
+  function noiseBurst(dur, cutoff, vol, tail) {
+    const t = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i += 1) {
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, tail);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = cutoff;
+    const g = ctx.createGain();
+    g.gain.value = vol;
+    src.connect(f);
+    f.connect(g);
+    g.connect(sfxGain);
+    src.start(t);
+    return t;
+  }
+
   return {
     get stationName() {
       return STATIONS[station].name;
@@ -260,6 +294,13 @@ export function createAudio() {
       if (ctx) nextStepTime = ctx.currentTime + 0.05;
       return STATIONS[station].name;
     },
+    // Jump straight to a station (used when restoring a save's radio).
+    setStation(i) {
+      station = ((i % STATIONS.length) + STATIONS.length) % STATIONS.length;
+      step = 0;
+      if (ctx) nextStepTime = ctx.currentTime + 0.05;
+      return STATIONS[station].name;
+    },
     setMuted(m) {
       muted = m;
       if (master && ctx) master.gain.setTargetAtTime(m ? 0 : 0.9, ctx.currentTime, 0.05);
@@ -285,42 +326,12 @@ export function createAudio() {
     },
     shot() {
       if (!ctx) return;
-      const t = ctx.currentTime;
-      const len = Math.floor(ctx.sampleRate * 0.14);
-      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i += 1) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.2);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const f = ctx.createBiquadFilter();
-      f.type = 'lowpass';
-      f.frequency.value = 2400;
-      const g = ctx.createGain();
-      g.gain.value = 0.8;
-      src.connect(f);
-      f.connect(g);
-      g.connect(sfxGain);
-      src.start(t);
+      const t = noiseBurst(0.14, 2400, 0.8, 2.2);
       blip(90, 0.12, 'sine', 0.5, t, sfxGain);
     },
     crash(strength) {
       if (!ctx) return;
-      const t = ctx.currentTime;
-      const len = Math.floor(ctx.sampleRate * 0.3);
-      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i += 1) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const f = ctx.createBiquadFilter();
-      f.type = 'lowpass';
-      f.frequency.value = 500 + strength * 900;
-      const g = ctx.createGain();
-      g.gain.value = clamp(0.25 + strength * 0.6, 0, 0.9);
-      src.connect(f);
-      f.connect(g);
-      g.connect(sfxGain);
-      src.start(t);
+      const t = noiseBurst(0.3, 500 + strength * 900, clamp(0.25 + strength * 0.6, 0, 0.9), 1.6);
       blip(70, 0.2, 'sine', 0.5, t, sfxGain);
     },
     blip() {
@@ -340,22 +351,7 @@ export function createAudio() {
     },
     explosion() {
       if (!ctx) return;
-      const t = ctx.currentTime;
-      const len = Math.floor(ctx.sampleRate * 0.7);
-      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i += 1) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.2);
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      const f = ctx.createBiquadFilter();
-      f.type = 'lowpass';
-      f.frequency.value = 320;
-      const g = ctx.createGain();
-      g.gain.value = 0.9;
-      src.connect(f);
-      f.connect(g);
-      g.connect(sfxGain);
-      src.start(t);
+      const t = noiseBurst(0.7, 320, 0.9, 1.2);
       blip(48, 0.6, 'sine', 0.7, t, sfxGain);
     },
     update() {

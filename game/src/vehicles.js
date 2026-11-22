@@ -1,8 +1,12 @@
-// Arcade vehicle physics + low-poly vehicle meshes.
-// One merged vertex-coloured mesh per car keeps draw calls low; police light
-// bars are the only extra meshes. No external assets.
+// Arcade vehicle physics + low-poly vehicle meshes for Neon Bay Heat.
+// Each vehicle is one merged vertex-coloured mesh (one draw call per car);
+// police light bars are the only extra meshes. No external assets.
+//
+// Part format: [w, h, d, x, y, z, color, ry?] — a box at (x, y, z) with an
+// optional yaw. Keeping parts as plain arrays makes the mesh table compact
+// and the merge loop trivial.
 import * as THREE from '../vendor/three.module.min.js';
-import { clamp, damp, lerp } from './util.js';
+import { clamp, damp } from './util.js';
 
 export const VEHICLE_DEFS = {
   supercar: {
@@ -12,6 +16,14 @@ export const VEHICLE_DEFS = {
   muscle: {
     name: 'Sabre GT', kind: 'car', topSpeed: 53, accel: 25, brake: 38, grip: 7,
     turn: 1.9, color: 0xff7a1a, nitro: true, seats: 2,
+  },
+  convertible: {
+    name: 'Sunset Spyder', kind: 'car', topSpeed: 58, accel: 28, brake: 40, grip: 8.5,
+    turn: 2.2, color: 0x2ee8ff, nitro: true, seats: 2, openTop: true,
+  },
+  van: {
+    name: 'Bay Runner', kind: 'car', topSpeed: 44, accel: 18, brake: 34, grip: 8,
+    turn: 1.6, color: 0x9dff57, nitro: false, seats: 2, heavy: true, health: 160,
   },
   taxi: {
     name: 'City Cab', kind: 'car', topSpeed: 45, accel: 19, brake: 36, grip: 8,
@@ -31,7 +43,12 @@ export const VEHICLE_DEFS = {
   },
 };
 
-// Merge coloured boxes into one geometry (single draw call per vehicle).
+const DARK = 0x14181f;
+const TYRE = 0x0c0c0c;
+const LAMP_F = 0xfff6cf;
+const LAMP_R = 0xff2222;
+
+// Merge coloured boxes into a single vertex-coloured geometry.
 function mergeBoxes(parts) {
   const positions = [];
   const normals = [];
@@ -39,16 +56,21 @@ function mergeBoxes(parts) {
   const indices = [];
   const col = new THREE.Color();
   let base = 0;
+  const m4 = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const eul = new THREE.Euler();
+  const one = new THREE.Vector3(1, 1, 1);
   for (const p of parts) {
-    const geo = new THREE.BoxGeometry(p.w, p.h, p.d);
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, p.ry ?? 0, 0));
-    m.compose(new THREE.Vector3(p.x, p.y, p.z), q, new THREE.Vector3(1, 1, 1));
-    geo.applyMatrix4(m);
+    const [w, h, d, x, y, z, color, ry] = p;
+    const geo = new THREE.BoxGeometry(w, h, d);
+    eul.set(0, ry ?? 0, 0);
+    q.setFromEuler(eul);
+    m4.compose(new THREE.Vector3(x, y, z), q, one);
+    geo.applyMatrix4(m4);
     const pos = geo.attributes.position;
     const nor = geo.attributes.normal;
     const idx = geo.index;
-    col.setHex(p.color);
+    col.setHex(color);
     for (let i = 0; i < pos.count; i += 1) {
       positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
       normals.push(nor.getX(i), nor.getY(i), nor.getZ(i));
@@ -66,49 +88,82 @@ function mergeBoxes(parts) {
   return g;
 }
 
-const carMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+const bodyMat = new THREE.MeshLambertMaterial({ vertexColors: true });
 
-export function buildCarMesh(def) {
+// Standard car body: slab + cabin + 4 wheels + lights. Extras per def below.
+function carParts(def) {
   const c = def.color;
-  const dark = 0x14181f;
+  const cabin = def.police ? 0x181c22 : DARK;
   const parts = [
-    { w: 2.0, h: 0.62, d: 4.4, x: 0, y: 0.58, z: 0, color: c },
-    { w: 1.7, h: 0.55, d: 2.1, x: 0, y: 1.12, z: -0.25, color: def.police ? 0x181c22 : dark },
-    { w: 0.34, h: 0.66, d: 0.95, x: -0.95, y: 0.33, z: 1.45, color: 0x0c0c0c },
-    { w: 0.34, h: 0.66, d: 0.95, x: 0.95, y: 0.33, z: 1.45, color: 0x0c0c0c },
-    { w: 0.34, h: 0.66, d: 0.95, x: -0.95, y: 0.33, z: -1.45, color: 0x0c0c0c },
-    { w: 0.34, h: 0.66, d: 0.95, x: 0.95, y: 0.33, z: -1.45, color: 0x0c0c0c },
-    { w: 0.34, h: 0.14, d: 0.08, x: -0.6, y: 0.62, z: 2.21, color: 0xfff6cf },
-    { w: 0.34, h: 0.14, d: 0.08, x: 0.6, y: 0.62, z: 2.21, color: 0xfff6cf },
-    { w: 0.34, h: 0.14, d: 0.08, x: -0.6, y: 0.62, z: -2.21, color: 0xff2222 },
-    { w: 0.34, h: 0.14, d: 0.08, x: 0.6, y: 0.62, z: -2.21, color: 0xff2222 },
+    [2.0, 0.62, 4.4, 0, 0.58, 0, c],
+    [1.7, 0.55, 2.1, 0, 1.12, -0.25, cabin],
+    [0.34, 0.66, 0.95, -0.95, 0.33, 1.45, TYRE],
+    [0.34, 0.66, 0.95, 0.95, 0.33, 1.45, TYRE],
+    [0.34, 0.66, 0.95, -0.95, 0.33, -1.45, TYRE],
+    [0.34, 0.66, 0.95, 0.95, 0.33, -1.45, TYRE],
+    [0.34, 0.14, 0.08, -0.6, 0.62, 2.21, LAMP_F],
+    [0.34, 0.14, 0.08, 0.6, 0.62, 2.21, LAMP_F],
+    [0.34, 0.14, 0.08, -0.6, 0.62, -2.21, LAMP_R],
+    [0.34, 0.14, 0.08, 0.6, 0.62, -2.21, LAMP_R],
   ];
   if (def === VEHICLE_DEFS.supercar) {
-    parts.push({ w: 1.9, h: 0.09, d: 0.42, x: 0, y: 1.05, z: -2.05, color: 0x111111 });
-    parts.push({ w: 0.1, h: 0.28, d: 0.3, x: -0.8, y: 0.9, z: -2.05, color: 0x111111 });
-    parts.push({ w: 0.1, h: 0.28, d: 0.3, x: 0.8, y: 0.9, z: -2.05, color: 0x111111 });
+    parts.push(
+      [1.9, 0.09, 0.42, 0, 1.05, -2.05, 0x111111],
+      [0.1, 0.28, 0.3, -0.8, 0.9, -2.05, 0x111111],
+      [0.1, 0.28, 0.3, 0.8, 0.9, -2.05, 0x111111],
+    );
+  }
+  if (def === VEHICLE_DEFS.convertible) {
+    // Open top: no cabin box, low windscreen + roll bar instead.
+    parts[1] = [1.7, 0.18, 2.0, 0, 0.95, -0.25, DARK];
+    parts.push(
+      [1.6, 0.5, 0.12, 0, 1.15, 0.75, 0x9fe8ff],
+      [1.6, 0.14, 0.14, 0, 1.28, -1.2, 0x222222],
+      [1.5, 0.4, 1.4, 0, 0.95, -0.4, 0x333333],
+    );
+  }
+  if (def === VEHICLE_DEFS.van) {
+    parts.length = 0;
+    parts.push(
+      [2.2, 0.7, 4.8, 0, 0.6, 0, c],
+      [2.1, 1.3, 3.4, 0, 1.5, -0.5, c],
+      [2.12, 0.5, 3.42, 0, 1.05, -0.5, 0x2c353b],
+      [1.9, 0.7, 0.1, 0, 1.5, 1.25, 0x9fe8ff],
+      [0.36, 0.7, 1.0, -1.0, 0.35, 1.5, TYRE],
+      [0.36, 0.7, 1.0, 1.0, 0.35, 1.5, TYRE],
+      [0.36, 0.7, 1.0, -1.0, 0.35, -1.5, TYRE],
+      [0.36, 0.7, 1.0, 1.0, 0.35, -1.5, TYRE],
+      [0.36, 0.15, 0.08, -0.65, 0.65, 2.41, LAMP_F],
+      [0.36, 0.15, 0.08, 0.65, 0.65, 2.41, LAMP_F],
+      [0.36, 0.15, 0.08, -0.65, 0.65, -2.41, LAMP_R],
+      [0.36, 0.15, 0.08, 0.65, 0.65, -2.41, LAMP_R],
+    );
   }
   if (def === VEHICLE_DEFS.taxi) {
-    parts.push({ w: 0.9, h: 0.22, d: 0.5, x: 0, y: 1.5, z: -0.25, color: 0xfff2b0 });
+    parts.push([0.9, 0.22, 0.5, 0, 1.5, -0.25, 0xfff2b0]);
   }
   if (def === VEHICLE_DEFS.truck) {
     parts.length = 0;
     parts.push(
-      { w: 2.6, h: 1.1, d: 2.0, x: 0, y: 0.85, z: 2.2, color: 0x3a464e },
-      { w: 2.6, h: 2.4, d: 4.6, x: 0, y: 1.9, z: -0.8, color: 0x5a6a72 },
-      { w: 2.62, h: 0.5, d: 4.62, x: 0, y: 0.95, z: -0.8, color: 0x2c353b },
-      { w: 0.4, h: 0.8, d: 1.1, x: -1.15, y: 0.4, z: 2.6, color: 0x0c0c0c },
-      { w: 0.4, h: 0.8, d: 1.1, x: 1.15, y: 0.4, z: 2.6, color: 0x0c0c0c },
-      { w: 0.4, h: 0.8, d: 1.1, x: -1.15, y: 0.4, z: -2.6, color: 0x0c0c0c },
-      { w: 0.4, h: 0.8, d: 1.1, x: 1.15, y: 0.4, z: -2.6, color: 0x0c0c0c },
-      { w: 0.4, h: 0.16, d: 0.08, x: -0.7, y: 0.85, z: 3.21, color: 0xfff6cf },
-      { w: 0.4, h: 0.16, d: 0.08, x: 0.7, y: 0.85, z: 3.21, color: 0xfff6cf },
-      { w: 0.4, h: 0.16, d: 0.08, x: -0.7, y: 0.85, z: -3.11, color: 0xff2222 },
-      { w: 0.4, h: 0.16, d: 0.08, x: 0.7, y: 0.85, z: -3.11, color: 0xff2222 },
+      [2.6, 1.1, 2.0, 0, 0.85, 2.2, 0x3a464e],
+      [2.6, 2.4, 4.6, 0, 1.9, -0.8, 0x5a6a72],
+      [2.62, 0.5, 4.62, 0, 0.95, -0.8, 0x2c353b],
+      [0.4, 0.8, 1.1, -1.15, 0.4, 2.6, TYRE],
+      [0.4, 0.8, 1.1, 1.15, 0.4, 2.6, TYRE],
+      [0.4, 0.8, 1.1, -1.15, 0.4, -2.6, TYRE],
+      [0.4, 0.8, 1.1, 1.15, 0.4, -2.6, TYRE],
+      [0.4, 0.16, 0.08, -0.7, 0.85, 3.21, LAMP_F],
+      [0.4, 0.16, 0.08, 0.7, 0.85, 3.21, LAMP_F],
+      [0.4, 0.16, 0.08, -0.7, 0.85, -3.11, LAMP_R],
+      [0.4, 0.16, 0.08, 0.7, 0.85, -3.11, LAMP_R],
     );
   }
+  return parts;
+}
+
+export function buildCarMesh(def) {
   const group = new THREE.Group();
-  const body = new THREE.Mesh(mergeBoxes(parts), carMaterial);
+  const body = new THREE.Mesh(mergeBoxes(carParts(def)), bodyMat);
   body.castShadow = true;
   group.add(body);
   let lightBar = null;
@@ -127,41 +182,43 @@ export function buildCarMesh(def) {
 
 export function buildBoatMesh(def) {
   const parts = [
-    { w: 2.4, h: 0.7, d: 7.5, x: 0, y: 0.55, z: 0, color: def.color },
-    { w: 2.0, h: 0.5, d: 2.2, x: 0, y: 1.05, z: -0.6, color: 0x18222e },
-    { w: 2.42, h: 0.18, d: 7.52, x: 0, y: 0.95, z: 0, color: 0xff2e88 },
-    { w: 0.5, h: 0.9, d: 0.5, x: -0.7, y: 1.2, z: -3.4, color: 0x222222 },
-    { w: 0.5, h: 0.9, d: 0.5, x: 0.7, y: 1.2, z: -3.4, color: 0x222222 },
+    [2.4, 0.7, 7.5, 0, 0.55, 0, def.color],
+    [2.0, 0.5, 2.2, 0, 1.05, -0.6, 0x18222e],
+    [2.42, 0.18, 7.52, 0, 0.95, 0, 0xff2e88],
+    [0.5, 0.9, 0.5, -0.7, 1.2, -3.4, 0x222222],
+    [0.5, 0.9, 0.5, 0.7, 1.2, -3.4, 0x222222],
   ];
   const group = new THREE.Group();
-  const body = new THREE.Mesh(mergeBoxes(parts), carMaterial);
+  const body = new THREE.Mesh(mergeBoxes(parts), bodyMat);
   body.castShadow = true;
   group.add(body);
   return { group, lightBar: null };
 }
 
 export function createVehicle(def, x, z, heading) {
-  const { group, lightBar } = def.kind === 'boat' ? buildBoatMesh(def) : buildCarMesh(def);
+  const built = def.kind === 'boat' ? buildBoatMesh(def) : buildCarMesh(def);
   const v = {
     def,
-    mesh: group,
-    lightBar,
+    mesh: built.group,
+    lightBar: built.lightBar,
     pos: new THREE.Vector3(x, 0, z),
     vel: new THREE.Vector3(),
     heading,
-    speed: 0, // forward speed (signed)
+    speed: 0,
     steerVis: 0,
+    accelVis: 0,
     drifting: false,
     nitro: false,
     nitroFuel: 100,
     health: def.health ?? 100,
     dead: false,
-    radius: def === VEHICLE_DEFS.truck ? 2.4 : 1.7,
+    radius: def === VEHICLE_DEFS.truck ? 2.4 : def === VEHICLE_DEFS.van ? 2.0 : 1.7,
     smokeT: 0,
     flashT: 0,
+    spiked: 0, // spike-strip timer: steering + top speed crippled while > 0
   };
-  group.position.copy(v.pos);
-  group.rotation.y = heading;
+  v.mesh.position.copy(v.pos);
+  v.mesh.rotation.y = heading;
   return v;
 }
 
@@ -182,8 +239,11 @@ export function updateVehicle(v, input, dt, city, onCrash) {
   v.speed = fwdSpeed;
   const speed01 = clamp(Math.abs(fwdSpeed) / def.topSpeed, 0, 1);
 
+  // Spike strips: crippled handling for a few seconds.
+  if (v.spiked > 0) v.spiked -= dt;
+
   // Nitro.
-  const wantNitro = input.nitro && def.nitro && v.nitroFuel > 0 && fwdSpeed > 5;
+  const wantNitro = input.nitro && def.nitro && v.nitroFuel > 0 && fwdSpeed > 5 && v.spiked <= 0;
   v.nitro = wantNitro;
   if (wantNitro) v.nitroFuel = Math.max(0, v.nitroFuel - 30 * dt);
   else v.nitroFuel = Math.min(100, v.nitroFuel + 6 * dt);
@@ -192,11 +252,11 @@ export function updateVehicle(v, input, dt, city, onCrash) {
   let engine = 0;
   if (input.throttle > 0) engine = def.accel * input.throttle;
   else if (input.throttle < 0) {
-    if (fwdSpeed > 1) engine = -def.brake; // brake
-    else engine = def.accel * 0.55 * input.throttle; // reverse
+    engine = fwdSpeed > 1 ? -def.brake : def.accel * 0.55 * input.throttle;
   }
   if (wantNitro) engine *= 1.8;
-  const maxSpeed = def.topSpeed * (wantNitro ? 1.28 : 1);
+  if (v.spiked > 0) engine *= 0.45;
+  const maxSpeed = def.topSpeed * (wantNitro ? 1.28 : 1) * (v.spiked > 0 ? 0.55 : 1);
   v.vel.x += fwdX * engine * dt;
   v.vel.z += fwdZ * engine * dt;
 
@@ -210,7 +270,7 @@ export function updateVehicle(v, input, dt, city, onCrash) {
   v.steerVis = damp(v.steerVis, steerTarget, 10, dt);
   const grip = input.handbrake ? 2.0 : def.grip;
   const turnAuthority = clamp(Math.abs(fwdSpeed) / 8, 0, 1) * (fwdSpeed >= 0 ? 1 : -1);
-  const turnRate = v.steerVis * def.turn * (1 - speed01 * 0.45) * turnAuthority;
+  const turnRate = v.steerVis * def.turn * (1 - speed01 * 0.45) * turnAuthority * (v.spiked > 0 ? 0.6 : 1);
   v.heading += turnRate * dt * (input.handbrake ? 1.5 : 1);
 
   // Lateral grip: velocity follows heading, loosely while drifting.
@@ -228,9 +288,7 @@ export function updateVehicle(v, input, dt, city, onCrash) {
 
   // Cap speed.
   const sp = Math.hypot(v.vel.x, v.vel.z);
-  if (sp > maxSpeed) {
-    v.vel.multiplyScalar(maxSpeed / sp);
-  }
+  if (sp > maxSpeed) v.vel.multiplyScalar(maxSpeed / sp);
   if (sp < 0.05 && input.throttle === 0) v.vel.set(0, 0, 0);
 
   // Integrate + collide.
@@ -264,9 +322,8 @@ export function updateVehicle(v, input, dt, city, onCrash) {
   if (crashed && !wasCrashed) {
     if (sp > 6 && onCrash) onCrash(clamp(sp / 40, 0.15, 1));
     if (sp > 12) {
-      v.health -= (sp - 12) * 0.8;
-      // The armored truck can't be wrecked by crashes (its floor is 150 HP);
-      // death itself is the caller's job (killVehicle: explosion + eject).
+      // A hard hit costs health, but a few scrapes shouldn't total the car.
+      v.health -= (sp - 12) * 0.4;
       if (v.truckUnit) v.health = Math.max(v.health, 150);
     }
   }
@@ -353,5 +410,3 @@ export function collideVehicles(a, b) {
 export function kmh(v) {
   return Math.abs(v.speed) * 3.6;
 }
-
-export { lerp };

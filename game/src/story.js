@@ -1,42 +1,51 @@
-// Story layer: Lena's job briefings and one-liners. Every mission is a job
-// for Lena — she runs this town's work, and the player is her new hire.
-// The briefing card appears when a mission starts; the completion line is
-// shown when it is done. Plain DOM, no assets.
+// Story layer: Lena's job briefings and one-liners for Neon Bay Heat.
+// Every mission is a job for Lena — she runs this town's work, and the
+// player is her new hire. The briefing card appears when a mission starts;
+// the completion line is shown when it is done. Plain DOM, no assets.
+import { fmtTime } from './util.js';
+
 export const MISSION_BRIEFINGS = {
   race: {
     lines: [
-      'Lena: the Solmar crew runs a street race every sunset, and nobody outside the family ever wins it.',
-      'Change that.',
+      'Lena: the Solmar crew holds a street race every sunset, and no outsider has ever taken their money.',
+      'Go take it.',
     ],
-    complete: 'Lena: the Solmar crew is eating your dust. Nice driving.',
+    complete: 'Lena: the Solmar crew is eating your dust. Beautiful driving.',
   },
   getaway: {
     lines: [
-      'Lena: two stars on you before you even start — the NBPD knows your face now.',
-      'Lose them at the checkpoints and don\'t stop for anyone.',
+      'Lena: two stars on you before the job even starts — the NBPD already knows your face.',
+      'Hit the checkpoints and don\'t stop for anyone.',
     ],
-    complete: 'Lena: clean. The cops are still looking for a ghost.',
+    complete: 'Lena: clean getaway. The cops are still chasing a ghost.',
   },
   heist: {
     lines: [
-      'Lena: the Solmar truck carries the casino\'s weekend take. Stop it, grab the cash, bring it to me.',
-      'Don\'t scratch the paint — actually, scratch it all you want.',
+      'Lena: the Solmar truck carries the casino\'s weekend take. Stop it, grab the cash, bring it home.',
+      'Scratch the paint all you want — just bring the money.',
     ],
     complete: 'Lena: the weekend take, right on time. You\'re family now.',
   },
   boat: {
     lines: [
-      'Lena: my cousin\'s boat is waiting at the pier with a hold full of… souvenirs.',
+      'Lena: my cousin\'s boat is at the pier with a hold full of… souvenirs.',
       'Round the buoys, bring her home, and don\'t ask what\'s in the hold.',
     ],
     complete: 'Lena: souvenirs delivered. My cousin owes you one.',
   },
   trial: {
     lines: [
-      'Lena: six rings, a hundred seconds, downtown at night. The crew bets against you.',
+      'Lena: six rings, a hundred seconds, downtown at night. The crew is betting against you.',
       'Take their money.',
     ],
-    complete: 'Lena: a hundred seconds and the crew is broke. Beautiful.',
+    complete: 'Lena: a hundred seconds and the crew is broke. That\'s my driver.',
+  },
+  neon: {
+    lines: [
+      'Lena: four drops, one night, and every cop in the city is awake. The packages pay double after dark.',
+      'Don\'t get cute — just deliver.',
+    ],
+    complete: 'Lena: four drops, no witnesses, no problems. The night belongs to us.',
   },
 };
 
@@ -66,7 +75,7 @@ export function showBriefing(def) {
   }
   const reward = document.createElement('div');
   reward.textContent = 'Reward: $' + def.reward.toLocaleString('en-US')
-    + (def.timeLimit ? '  ·  Time limit: ' + def.timeLimit + 's' : '');
+    + (def.timeLimit ? '  ·  Time limit: ' + fmtTime(def.timeLimit) : '');
   reward.style.cssText = 'font-size:13px;color:#7dff9e;margin-top:6px;';
   card.appendChild(reward);
   const btn = document.createElement('button');

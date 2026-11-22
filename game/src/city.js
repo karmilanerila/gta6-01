@@ -1,7 +1,9 @@
-// Neon Bay: procedural open-world city. All textures are painted on canvas at
-// boot; all meshes are original low-poly geometry. No external assets.
+// Neon Bay: procedural open-world city for Neon Bay Heat.
+// All textures are painted on canvas at boot; all meshes are original
+// low-poly geometry. No external assets, no network.
 // Layout: beach + ocean east, art-deco hotel row on Palma Drive, downtown
-// towers north-west, port basin south-west, park mid-city.
+// towers north-west, port basin south-west, park mid-city, boardwalk and a
+// pier on the beach, casino row downtown.
 import * as THREE from '../vendor/three.module.min.js';
 import { clamp, hash2, makeCanvas, makeRng } from './util.js';
 
@@ -15,7 +17,7 @@ export const WORLD = {
 
 // ---------- procedural textures ----------
 
-function facadeTexture(rng, base, opts = {}) {
+function paintFacade(rng, base, opts = {}) {
   const floors = opts.floors ?? 8;
   const cols = opts.cols ?? 6;
   const deco = opts.deco ?? false;
@@ -26,7 +28,6 @@ function facadeTexture(rng, base, opts = {}) {
     g.fillStyle = base;
     g.fillRect(0, 0, w, h);
     if (deco) {
-      // Art-deco vertical stripes + pastel banding.
       g.fillStyle = 'rgba(255,255,255,0.16)';
       for (let x = 8; x < w; x += 24) g.fillRect(x, 0, 5, h);
       g.fillStyle = 'rgba(255,255,255,0.22)';
@@ -46,7 +47,6 @@ function facadeTexture(rng, base, opts = {}) {
         g.fillRect(x, y, ww * 0.64, 2);
       }
     }
-    // Grime at the base.
     const grad = g.createLinearGradient(0, h - 40, 0, h);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
     grad.addColorStop(1, 'rgba(0,0,0,0.35)');
@@ -59,7 +59,7 @@ function facadeTexture(rng, base, opts = {}) {
   return t;
 }
 
-function neonTexture(text, color, sub) {
+function paintNeonSign(text, color, sub) {
   const c = makeCanvas(512, 160, (g) => {
     g.clearRect(0, 0, 512, 160);
     g.textAlign = 'center';
@@ -85,13 +85,12 @@ function neonTexture(text, color, sub) {
   return t;
 }
 
-function groundTexture() {
+function paintGround() {
   const S = 2048;
-  const scale = S / 520; // world 520 wide -> px
+  const scale = S / 520;
   const X = (x) => (x + 260) * scale;
   const Z = (z) => (z + 260) * scale;
   const c = makeCanvas(S, S, (g) => {
-    // Base: block concrete (dusty purple-grey).
     g.fillStyle = '#3a3a48';
     g.fillRect(0, 0, S, S);
     // Park block grass.
@@ -109,7 +108,12 @@ function groundTexture() {
       const pz = Z(-255 + ((i * 91) % 510));
       g.fillRect(px, pz, 3, 3);
     }
-    // Ocean floor (seen through transparent water plane).
+    // Boardwalk planks along the beach.
+    g.fillStyle = '#8a6a42';
+    g.fillRect(X(176), Z(-260), 7 * scale, 520 * scale);
+    g.fillStyle = 'rgba(0,0,0,0.25)';
+    for (let z = -258; z < 260; z += 6) g.fillRect(X(176), Z(z), 7 * scale, 1);
+    // Ocean floor (seen through the transparent water plane).
     g.fillStyle = '#0b3d5c';
     g.fillRect(X(200), Z(-260), 60 * scale, 520 * scale);
     // Port basin floor.
@@ -149,7 +153,7 @@ function groundTexture() {
     // Beach umbrellas.
     const umbrella = ['#ff5da2', '#37e0c8', '#ffd166', '#ff7a3d'];
     for (let i = 0; i < 26; i += 1) {
-      const ux = X(181 + ((i * 53) % 14));
+      const ux = X(188 + ((i * 53) % 10));
       const uz = Z(-245 + ((i * 97) % 490));
       g.fillStyle = umbrella[i % 4];
       g.beginPath();
@@ -163,7 +167,7 @@ function groundTexture() {
   return t;
 }
 
-function waterTexture() {
+function paintWater() {
   const c = makeCanvas(256, 256, (g) => {
     g.fillStyle = '#1a6a8d';
     g.fillRect(0, 0, 256, 256);
@@ -195,7 +199,6 @@ const MID_COLORS = ['#8a7a6a', '#a08a7a', '#7a8a94', '#9a8a5a', '#6a7a6a'];
 const NEON_SIGNS = [
   ['HOTEL', 'PALMA', '#ff5da2'],
   ['NEON', 'BAY', '#37e0c8'],
-  ['CASINO', 'SOLMAR', '#ffd166'],
   ['PIER 9', 'BAR', '#ff7a3d'],
   ['TACOS', '24 HRS', '#9dff57'],
   ['HOTEL', 'CORAL', '#ff9de2'],
@@ -259,14 +262,14 @@ export function buildCity(scene, seed) {
   // ----- ground -----
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(520, 520),
-    new THREE.MeshLambertMaterial({ map: groundTexture() }),
+    new THREE.MeshLambertMaterial({ map: paintGround() }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
 
   // ----- water -----
-  const waterTex = waterTexture();
+  const waterTex = paintWater();
   const waterMat = new THREE.MeshLambertMaterial({
     map: waterTex, transparent: true, opacity: 0.78, color: 0xbfe0f0,
   });
@@ -294,7 +297,7 @@ export function buildCity(scene, seed) {
   const signMeshes = [];
 
   function addBuilding(cx, cz, w, d, h, opts = {}) {
-    const mat = facadeMat(opts.matKey, () => facadeTexture(
+    const mat = facadeMat(opts.matKey, () => paintFacade(
       makeRng((cx * 31 + cz * 17 + h) | 0),
       opts.color,
       { floors: clamp(Math.round(h / 6), 2, 22), cols: clamp(Math.round(w / 5), 3, 8), deco: !!opts.deco, litRatio: opts.litRatio ?? 0.45 },
@@ -325,7 +328,7 @@ export function buildCity(scene, seed) {
     if (opts.sign) {
       const [text, sub, color] = opts.sign;
       const sm = new THREE.MeshBasicMaterial({
-        map: neonTexture(text, color, sub), transparent: true, side: THREE.DoubleSide,
+        map: paintNeonSign(text, color, sub), transparent: true, side: THREE.DoubleSide,
       });
       const sw = Math.min(w * 0.9, 22);
       const s = new THREE.Mesh(new THREE.PlaneGeometry(sw, sw * 0.3125), sm);
@@ -354,6 +357,7 @@ export function buildCity(scene, seed) {
   const zBlocks = [[-260 + 11, st[0] - 11], ...blockRange(st), [st[st.length - 1] + 11, 260 - 11]];
 
   let signIdx = 0;
+  let casinoPlaced = false;
   for (const [x0, x1] of xBlocks) {
     for (const [z0, z1] of zBlocks) {
       const cx = (x0 + x1) / 2;
@@ -379,16 +383,23 @@ export function buildCity(scene, seed) {
           litRatio: 0.6,
         });
       } else if (downtown) {
+        // Casino row: the tallest downtown tower wears the CASINO SOLMAR sign.
         const n = h < 0.5 ? 1 : 2;
         for (let i = 0; i < n; i += 1) {
           const w = (bw - 6) / n;
           const bx = x0 + 3 + w * (i + 0.5);
           const bh = 55 + h * 75 + i * 13;
           const ci = Math.floor(h * TOWER_COLORS.length) % TOWER_COLORS.length;
+          let sign = null;
+          if (!casinoPlaced && bh > 100) {
+            sign = ['CASINO', 'SOLMAR', '#ffd166'];
+            casinoPlaced = true;
+          }
           addBuilding(bx, cz, w - 3, bd - 6, bh, {
             color: TOWER_COLORS[ci],
             matKey: 'tower-' + ci + '-' + i,
             litRatio: 0.5,
+            sign,
           });
         }
       } else {
@@ -456,13 +467,13 @@ export function buildCity(scene, seed) {
   for (let i = 0; i < 14; i += 1) {
     palmSpots.push([52 + hash2(i, 1) * 56, 52 + hash2(i, 2) * 56]); // park
   }
+  // A few palms along the boardwalk, leaning toward the sea.
+  for (let z = -200; z <= 200; z += 60) palmSpots.push([179, z]);
   const trunkGeo = new THREE.CylinderGeometry(0.22, 0.34, 7, 6);
   const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8a6a4a });
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palmSpots.length);
   const crownGeo = new THREE.ConeGeometry(2.6, 3.2, 7);
   const crownMat = new THREE.MeshLambertMaterial({ color: 0x3a8a44 });
-  // Four fronds per palm instead of one cone: the crown reads as a palm,
-  // not a lollipop.
   const crowns = new THREE.InstancedMesh(crownGeo, crownMat, palmSpots.length * 4);
   const dummy = new THREE.Object3D();
   const upVec = new THREE.Vector3(0, 1, 0);
@@ -490,13 +501,10 @@ export function buildCity(scene, seed) {
   scene.add(crowns);
 
   // ----- beach landmark: ferris wheel + lifeguard tower -----
-  // A slow-turning wheel on the sand gives the beach a silhouette from
-  // Palma Drive and from the water. Cabins stay upright (repositioned in
-  // city.update); the rim and spokes spin.
   const wheel = { angle: 0, spin: null, cabins: [], x: 185, z: 150, hubY: 14, r: 9 };
   const wheelSpin = new THREE.Group();
   wheelSpin.position.set(wheel.x, wheel.hubY, wheel.z);
-  wheelSpin.rotation.y = Math.PI / 2; // wheel plane faces the city / beach
+  wheelSpin.rotation.y = Math.PI / 2;
   wheel.spin = wheelSpin;
   const rimMat = new THREE.MeshBasicMaterial({ color: 0xff5da2 });
   const rim = new THREE.Mesh(new THREE.TorusGeometry(wheel.r, 0.35, 8, 28), rimMat);
@@ -532,7 +540,7 @@ export function buildCity(scene, seed) {
     scene.add(cabin);
     wheel.cabins.push(cabin);
   }
-  city.colliders.push({ x0: 183, z0: 148, x1: 187, z1: 152 }); // wheel legs
+  city.colliders.push({ x0: 183, z0: 148, x1: 187, z1: 152 });
   // Lifeguard tower: platform on legs with a roof, south of the wheel.
   const towerMat = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 });
   const towerRed = new THREE.MeshLambertMaterial({ color: 0xc22e2e });
@@ -550,7 +558,49 @@ export function buildCity(scene, seed) {
   const towerRoof = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.2, 3.6), towerRed);
   towerRoof.position.set(190, 5.6, 120);
   scene.add(towerRoof);
-  city.colliders.push({ x0: 188.5, z0: 118.5, x1: 191.5, z1: 121.5 }); // tower legs
+  city.colliders.push({ x0: 188.5, z0: 118.5, x1: 191.5, z1: 121.5 });
+
+  // ----- boardwalk + pier (new in round 4) -----
+  // Wooden boardwalk strip on the sand, railing posts on the sea side.
+  const plankMat = new THREE.MeshLambertMaterial({ color: 0x8a6a42 });
+  const boardwalk = new THREE.Mesh(new THREE.BoxGeometry(7, 0.3, 500), plankMat);
+  boardwalk.position.set(179.5, 0.15, 0);
+  boardwalk.receiveShadow = true;
+  scene.add(boardwalk);
+  const railMat = new THREE.MeshLambertMaterial({ color: 0xd8d8e8 });
+  for (let z = -240; z <= 240; z += 20) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.1, 0.25), railMat);
+    post.position.set(182.8, 0.7, z);
+    scene.add(post);
+  }
+  // Pier: a deck out into the ocean at z = 0, with a neon arch at its base.
+  const pierMat = new THREE.MeshLambertMaterial({ color: 0x7a5a36 });
+  const pier = new THREE.Mesh(new THREE.BoxGeometry(38, 0.5, 9), pierMat);
+  pier.position.set(219, 0.9, 0);
+  pier.castShadow = true;
+  pier.receiveShadow = true;
+  scene.add(pier);
+  for (const px of [204, 214, 224, 234]) {
+    for (const pz of [-4, 4]) {
+      const pile = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 3.4, 6), pierMat);
+      pile.position.set(px, -0.6, pz);
+      scene.add(pile);
+    }
+  }
+  const archMat = new THREE.MeshBasicMaterial({
+    map: paintNeonSign('NEON BAY', '#37e0c8', 'PIER 9'), transparent: true, side: THREE.DoubleSide,
+  });
+  const arch = new THREE.Mesh(new THREE.PlaneGeometry(16, 5), archMat);
+  arch.position.set(201, 6.5, 0);
+  arch.rotation.y = Math.PI / 2;
+  scene.add(arch);
+  signMats.push(archMat);
+  signMeshes.push(arch);
+  for (const side of [-1, 1]) {
+    const archPost = new THREE.Mesh(new THREE.BoxGeometry(0.5, 7, 0.5), railMat);
+    archPost.position.set(201, 3.5, side * 4.4);
+    scene.add(archPost);
+  }
 
   // ----- streetlamps (instanced) + a few real night lights -----
   const lampSpots = [];
@@ -583,6 +633,12 @@ export function buildCity(scene, seed) {
     scene.add(pl);
     lampLights.push(pl);
   }
+  // The ferris wheel is the beach's beacon — a pink glow at its hub so it
+  // reads as a landmark after dark.
+  const wheelLight = new THREE.PointLight(0xff5da2, 0, 70, 1.6);
+  wheelLight.position.set(wheel.x, wheel.hubY, wheel.z);
+  scene.add(wheelLight);
+  lampLights.push(wheelLight);
 
   // ----- destructible props: hydrants + barriers -----
   const hydrantGeo = new THREE.CylinderGeometry(0.32, 0.4, 1.1, 8);
@@ -608,7 +664,7 @@ export function buildCity(scene, seed) {
   barrierSpots.forEach(([bx, bz], i) => addProp('barrier', bx, bz, i % 2 ? Math.PI / 2 : 0));
 
   // ----- parked car spawns -----
-  const parkedDefs = ['muscle', 'supercar', 'taxi', 'muscle', 'supercar', 'taxi', 'muscle', 'supercar'];
+  const parkedDefs = ['muscle', 'convertible', 'taxi', 'muscle', 'supercar', 'taxi', 'van', 'supercar'];
   const parkedSpots = [
     [162, -60, 0], [162, 60, 0], [162, 150, Math.PI], [178, -120, Math.PI],
     [-111, -160, Math.PI / 2], [49, -60, 0], [129, 100, Math.PI], [-31, 150, Math.PI / 2],
@@ -674,7 +730,7 @@ export function buildCity(scene, seed) {
     // tod: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
     const ang = (tod - 0.25) * Math.PI * 2;
     const elev = Math.sin(ang);
-    const dayF = clamp(elev * 2.2, 0, 1); // 1 at noon, 0 at night
+    const dayF = clamp(elev * 2.2, 0, 1);
     const sunsetF = clamp(1 - Math.abs(elev) * 3.2, 0, 1) * (elev > -0.12 ? 1 : 0);
     const sunDir = new THREE.Vector3(Math.cos(ang), Math.max(elev, 0.04), 0.35).normalize();
     sun.position.copy(focus).addScaledVector(sunDir, 260);
@@ -703,7 +759,7 @@ export function buildCity(scene, seed) {
     flickerT += dt;
     signMats.forEach((sm, i) => {
       let o = 0.55 + nightF * 0.45;
-      if (i === 2 && nightF > 0.5) o *= (Math.sin(flickerT * 13) > -0.86 ? 1 : 0.25); // one buzzing sign
+      if (i === 2 && nightF > 0.5) o *= (Math.sin(flickerT * 13) > -0.86 ? 1 : 0.25);
       sm.opacity = o;
     });
     // Water drift.

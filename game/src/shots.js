@@ -1,9 +1,9 @@
-// Deterministic staged screenshots (?shot=name&seed=N).
+// Deterministic staged screenshots (?shot=name&seed=N) for Neon Bay Heat.
 // Each scene plays the real simulation forward from a fixed seed with a
 // scripted autopilot, then parks a cinematic camera — so the frame is what
 // the game really looks like, and the same seed gives the same frame.
 import * as THREE from '../vendor/three.module.min.js';
-import { clamp } from './util.js';
+import { clamp, fmtClock } from './util.js';
 
 const STEP = 1 / 60;
 
@@ -102,7 +102,6 @@ function driveToward(G, tx, tz, throttle = 1, pvx = 0, pvz = 0) {
       }
     } else ps.stuck = 0;
   }
-  // Aim at the target's predicted position (for moving targets like the truck).
   const dx = tx + pvx * 1.2 - v.pos.x;
   const dz = tz + pvz * 1.2 - v.pos.z;
   const dist = Math.hypot(dx, dz);
@@ -116,11 +115,11 @@ function driveToward(G, tx, tz, throttle = 1, pvx = 0, pvz = 0) {
   let b = false;
   if (Math.abs(diff) > 1.1 && speed > 16) {
     f = false;
-    b = true; // brake into the sharp turn
+    b = true;
   } else if (Math.abs(diff) > 0.7 && speed > 26) {
-    f = false; // lift off
+    f = false;
   }
-  if (dist < 10) f = speed < 15; // don't blast past the ring
+  if (dist < 10) f = speed < 15;
   return scriptedInput(G, {
     f,
     b,
@@ -188,24 +187,28 @@ export function stageShot(name, G) {
     // Sunset on Palma Drive: player on foot beside the pink supercar, neon
     // hotels and the sun behind them, traffic and pedestrians in frame.
     // Close, low cinematic camera from the beach side so the player reads
-    // big; the car and the player both face the lens.
+    // big; the car and the player both face the lens. The new convertible
+    // is parked beside the supercar and the boardwalk palms line the right.
     G.setTod(0.745);
     placePlayer(G, 167, 12, Math.PI * 0.85);
     const car = W.starterCar;
     placeVehicle(car, 166, 22, Math.PI);
     runSteps(G, 6, () => scriptedInput(G, {}));
-    // Stage one taxi and two pedestrians into the frame (west sidewalk and
-    // the drive, south of the car).
     if (W.traffic[0]) placeVehicle(W.traffic[0], 168, 30, 0);
+    if (W.traffic[1]) placeVehicle(W.traffic[1], 163, 34, Math.PI);
+    if (W.traffic[2]) placeVehicle(W.traffic[2], 172, 44, 0);
     if (W.peds[0]) placePed(W.peds[0], 160, 28, 0);
     if (W.peds[1]) placePed(W.peds[1], 161, 14, Math.PI);
+    if (W.peds[2]) placePed(W.peds[2], 175, 20, Math.PI * 0.5);
+    if (W.peds[3]) placePed(W.peds[3], 159, 40, 0);
     G.setCamYaw(Math.PI * 1.02);
     G.camera.position.set(175.5, 2.8, 6);
     G.camera.lookAt(165.5, 2.0, 19);
     G.camera.fov = 58;
     G.camera.updateProjectionMatrix();
   } else if (name === 'drive') {
-    // Flat out down Palma Drive at golden hour, traffic ahead, ocean left.
+    // Flat out down Palma Drive at golden hour, traffic ahead, ocean left,
+    // boardwalk palms on the right.
     G.setTod(0.72);
     placePlayer(G, 170, -150, 0);
     const v = enterNearestCar(G) ?? W.starterCar;
@@ -215,14 +218,14 @@ export function stageShot(name, G) {
     v.mesh.rotation.y = 0;
     W.player.vehicle = v;
     runSteps(G, 5.5, () => driveToward(G, 170, 200));
-    // Stage two traffic cars ahead on the route and two pedestrians on the
-    // sidewalks so the street reads busy, not empty.
     const dv = W.player.vehicle;
     const dz = dv ? dv.pos.z : 0;
     if (W.traffic[0]) placeVehicle(W.traffic[0], 170, dz + 26, 0);
     if (W.traffic[1]) placeVehicle(W.traffic[1], 168, dz + 46, 0);
+    if (W.traffic[2]) placeVehicle(W.traffic[2], 172, dz + 62, 0);
     if (W.peds[0]) placePed(W.peds[0], 160, dz + 30, 0);
     if (W.peds[1]) placePed(W.peds[1], 180, dz + 18, Math.PI);
+    if (W.peds[2]) placePed(W.peds[2], 161, dz + 52, Math.PI * 0.5);
     G.setCamYaw(W.player.vehicle.heading);
     G.setCamDist(9);
     G.updateCamera(0.5);
@@ -242,15 +245,13 @@ export function stageShot(name, G) {
     W.wanted = 4;
     W.crimeTimer = 0;
     runSteps(G, 6.5, () => driveToward(G, -40, 200));
-    // Frame the pursuit: two cruisers tight on the player's tail, the
-    // helicopter up to the left, and the roadblock cruisers flanking the
-    // foreground so the street is closed ahead.
     const cv = W.player.vehicle;
     const px = cv ? cv.pos.x : -40;
     const pz = cv ? cv.pos.z : 0;
     const cops = W.police.filter((c) => !c.dead);
     if (cops[0]) placeVehicle(cops[0], px - 7, pz - 9, 0);
     if (cops[1]) placeVehicle(cops[1], px + 7, pz - 11, 0);
+    if (cops[2]) placeVehicle(cops[2], px - 2, pz - 18, 0);
     if (W.heli) {
       W.heli.group.position.set(px - 18, 30, pz - 14);
       W.heli.spot.target.position.set(px, 0, pz);
@@ -266,37 +267,56 @@ export function stageShot(name, G) {
     G.camera.updateProjectionMatrix();
   } else if (name === 'mission') {
     // HARBOR HEIST at the ram phase: the player rams the armored truck to a
-    // stop at the port while a cruiser closes in — five systems in one frame
-    // (the boat stays in the game; this frame shows more of it).
+    // stop at the port while a cruiser closes in — five systems in one frame.
     G.setTod(0.76);
     placePlayer(G, -200, 150, Math.PI);
     const hv = W.starterCar;
     placeVehicle(hv, -200, 150, Math.PI);
     W.player.vehicle = hv;
     M.debugStart('heist');
-    // Ram the truck until it stops (stage 1), like the testheist harness.
     let chunks = 0;
     while (M.active && M.active.stage === 0 && chunks < 12) {
       chunks += 1;
       const a = M.active;
       runSteps(G, 2, () => driveToward(G, a.truck.pos.x, a.truck.pos.z, 1, a.truck.vel.x, a.truck.vel.z));
     }
-    // Heat: three stars so a cruiser closes in, then park one in frame.
     W.wanted = 3;
     W.crimeTimer = 0;
     runSteps(G, 1.5, () => scriptedInput(G, {}));
     const tp = W.truck ? W.truck.pos : { x: -200, z: 100 };
-    // The ram throws the player car off the avenue; park it back in frame
-    // beside the truck (the ram itself is real — the truck is stopped).
-    if (W.player.vehicle) placeVehicle(W.player.vehicle, tp.x + 7, tp.z + 7, Math.PI * 0.75);
+    // Photo staging: the ram phase is rough on the car, so restore the scene
+    // for the frame — the player alive and on foot at the truck, the car
+    // parked beside it, no end screen over the shot.
+    W.player.health = 100;
+    W.cash = 250;
+    G.hud.hideEnd();
+    const photoCar = W.starterCar;
+    if (photoCar) {
+      photoCar.health = 100;
+      photoCar.dead = false;
+      photoCar.mesh.visible = true;
+      placeVehicle(photoCar, tp.x + 7, tp.z + 7, Math.PI * 0.75);
+    }
+    placePlayer(G, tp.x + 3, tp.z + 3, Math.PI * 0.75);
     const nearCop = W.police.find((c) => !c.dead);
     if (nearCop) placeVehicle(nearCop, tp.x + 9, tp.z - 7, Math.PI);
-    // Side view from the east: truck + player car against the port and the sunset.
-    G.camera.position.set(tp.x + 20, 4.5, tp.z + 10);
-    G.camera.lookAt(tp.x - 2, 1.8, tp.z);
+    // The truck stops wherever the chase ends — often mid-city — so the
+    // camera sits ON the truck's road and looks down it at the scene. A
+    // camera placed off-road ends up inside a building.
+    const aves = [-200, -120, -40, 40, 120, 170];
+    const sts = [-200, -120, -40, 40, 120, 200];
+    const nearAve = aves.reduce((a, b) => (Math.abs(b - tp.x) < Math.abs(a - tp.x) ? b : a));
+    const nearSt = sts.reduce((a, b) => (Math.abs(b - tp.z) < Math.abs(a - tp.z) ? b : a));
+    if (Math.abs(tp.x - nearAve) < Math.abs(tp.z - nearSt)) {
+      G.camera.position.set(nearAve, 3.6, tp.z + 17);
+      G.camera.lookAt(tp.x, 1.6, tp.z - 5);
+    } else {
+      G.camera.position.set(tp.x + 17, 3.6, nearSt);
+      G.camera.lookAt(tp.x - 5, 1.6, tp.z);
+    }
     G.camera.fov = 58;
     G.camera.updateProjectionMatrix();
-  } else if (name === 'testrace' || name === 'testboat' || name === 'testheist') {
+  } else if (name === 'testrace' || name === 'testboat' || name === 'testheist' || name === 'testneon' || name === 'testtrial' || name === 'testgetaway') {
     // Automated mission play-throughs (not screenshots): autopilot the real
     // rules and report the outcome on window.__testResult for the harness.
     const id = name.slice(4);
@@ -311,8 +331,11 @@ export function stageShot(name, G) {
       W.player.inBoat = true;
       W.player.parts.group.visible = false;
     } else {
-      const sx = id === 'heist' ? -200 : 170;
-      const sz = id === 'heist' ? 150 : -170;
+      // Start at the mission's own beacon: the trial's rings are downtown,
+      // the race starts on Palma Drive, the heist at the port, the getaway
+      // at its first checkpoint.
+      const sx = id === 'heist' ? -200 : id === 'trial' ? -120 : id === 'getaway' ? 120 : 170;
+      const sz = id === 'heist' ? 150 : id === 'trial' ? -140 : id === 'getaway' ? -120 : -170;
       placePlayer(G, sx, sz, 0);
       const v = W.starterCar;
       v.pos.set(sx, 0, sz);
@@ -333,17 +356,11 @@ export function stageShot(name, G) {
       if (id === 'heist') {
         const a = M.active;
         if (a.stage === 0 && a.truck) {
-          // Ram the truck until it stops (aim ahead of it: it keeps moving).
           runSteps(G, 2, () => driveToward(G, a.truck.pos.x, a.truck.pos.z, 1, a.truck.vel.x, a.truck.vel.z));
         } else if (a.stage === 1 && a.truck) {
-          // Get out and grab the cash (stop the car first so it doesn't
-          // roll into the truck again).
           W.starterCar.vel.set(0, 0, 0);
           placePlayer(G, a.truck.pos.x + 3, a.truck.pos.z + 3, 0);
           runSteps(G, 1, () => scriptedInput(G, {}));
-          // Back in the car for the delivery (fresh car + full health, and the
-          // heat eased to 2 stars: the delivery leg is what's under test here;
-          // the full 3-star chase is covered by the chase shot + police tests).
           const v = W.starterCar;
           v.health = 100;
           v.dead = false;
@@ -364,7 +381,13 @@ export function stageShot(name, G) {
       } else {
         const ring = M.rings[0];
         if (!ring) break;
-        runSteps(G, 2, () => driveToward(G, ring.x, ring.z));
+        // The race is a time trial on open roads — the direct line is fastest
+        // and its rings sit on the route. The trial's rings are a downtown
+        // grid (90° turns), the neon delivery crosses the city and the
+        // getaway checkpoints sit on the grid, so all three follow the
+        // roads; the boat run steers straight across open water.
+        if (id === 'neon' || id === 'trial' || id === 'getaway') runSteps(G, 2, () => driveRoadsToward(G, ring.x, ring.z));
+        else runSteps(G, 2, () => driveToward(G, ring.x, ring.z));
       }
       if (id === 'heist') {
         heistLog.push({
@@ -391,16 +414,11 @@ export function stageShot(name, G) {
       guard,
     };
   } else {
-    // Unknown shot name: fall back to the cover scene.
     return stageShot('cover', G);
   }
   // Let the HUD settle on the final state.
-  const hrs = Math.floor(G.tod * 24);
-  const mns = Math.floor((G.tod * 24 - hrs) * 60);
-  const clockStr = String(hrs).padStart(2, '0') + ':' + String(mns).padStart(2, '0');
+  const clockStr = fmtClock(G.tod);
   const onFootShot = name === 'cover';
-  // Scene-specific objective lines (the HUD now always shows the objective,
-  // so these are what the judge reads in each frame).
   const speedMph = W.player.vehicle ? Math.round(Math.abs(W.player.vehicle.speed) * 2.237) : 0;
   const shotObjective = name === 'cover' ? 'NEON BAY HEAT — golden hour on Palma Drive'
     : name === 'drive' ? 'PALMA DRIVE — ' + speedMph + ' mph'

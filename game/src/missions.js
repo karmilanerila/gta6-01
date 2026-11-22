@@ -1,5 +1,6 @@
-// Missions: 5 escalating jobs + stunt jumps, all driven by beacons and rings
-// in the world. State machine only; rendering is plain three.js primitives.
+// Missions for Neon Bay Heat: 6 escalating jobs + stunt jumps, all driven
+// by beacons and rings in the world. State machine only; rendering is plain
+// three.js primitives.
 import * as THREE from '../vendor/three.module.min.js';
 import { clamp, fmtCash } from './util.js';
 
@@ -76,6 +77,12 @@ export const MISSION_DEFS = [
     beacon: { x: -120, z: -120 },
     rings: [[-120, -120], [-40, -120], [-40, -40], [-120, -40], [-200, -40], [-200, -120]],
   },
+  {
+    id: 'neon', name: 'NEON RUN', desc: 'Night delivery: 4 drops across the city, 160 seconds, cops awake.',
+    reward: 2200, timeLimit: 160,
+    beacon: { x: 170, z: 100 },
+    rings: [[120, 200], [-40, 200], [-200, 40], [-120, -200]],
+  },
 ];
 
 const TRUCK_LOOP = [[-200, 120], [-200, -40], [-40, -40], [-40, 120]];
@@ -86,10 +93,10 @@ export function createMissions(scene, world, city, audio, hooks) {
     scene, world, city, audio, hooks,
     defs: MISSION_DEFS,
     done: [],
-    active: null, // {def, stage, ringIdx, timeLeft, truck, collected}
+    active: null,
     beacon: null,
     beaconDef: null,
-    rings: [], // {mesh, x, z, passed}
+    rings: [],
     time: 0,
     stunts: [],
     stuntCooldown: {},
@@ -132,10 +139,10 @@ export function createMissions(scene, world, city, audio, hooks) {
   function setBeacon(def) {
     m.clearBeacon();
     if (!def) return;
-    const { group, marker } = makeBeaconMesh(BEACON_COLOR);
-    group.position.set(def.beacon.x, 0, def.beacon.z);
-    scene.add(group);
-    m.beacon = { group, marker };
+    const built = makeBeaconMesh(BEACON_COLOR);
+    built.group.position.set(def.beacon.x, 0, def.beacon.z);
+    scene.add(built.group);
+    m.beacon = { group: built.group, marker: built.marker };
     m.beaconDef = def;
   }
 
@@ -196,7 +203,7 @@ export function createMissions(scene, world, city, audio, hooks) {
     const a = { def, stage: 0, ringIdx: 0, timeLeft: def.timeLimit, truck: null, collected: false };
     m.active = a;
     audio.blip();
-    if (def.id === 'race' || def.id === 'trial' || def.id === 'boat') {
+    if (def.id === 'race' || def.id === 'trial' || def.id === 'boat' || def.id === 'neon') {
       showRings(def.rings, 0);
       objective(def.name + ': ring ' + 1 + ' of ' + def.rings.length);
     } else if (def.id === 'getaway') {
@@ -217,7 +224,6 @@ export function createMissions(scene, world, city, audio, hooks) {
 
   m.update = (dt) => {
     m.time += dt;
-    // Beacon bob + spin.
     if (m.beacon) {
       m.beacon.marker.rotation.y += dt * 2.2;
       m.beacon.marker.position.y = 3.4 + Math.sin(m.time * 2.4) * 0.5;
@@ -225,9 +231,7 @@ export function createMissions(scene, world, city, audio, hooks) {
       const bd = Math.hypot(pp.x - m.beaconDef.beacon.x, pp.z - m.beaconDef.beacon.z);
       if (bd < 6) startMission(m.beaconDef);
     }
-    // Ring spin.
     for (const r of m.rings) r.mesh.rotation.y += dt * 0.5;
-    // Stunt jumps.
     const pv = world.player.vehicle;
     for (const s of m.stunts) {
       s.cooldown = Math.max(0, s.cooldown - dt);
@@ -242,7 +246,6 @@ export function createMissions(scene, world, city, audio, hooks) {
         if (hooks.onStunt) hooks.onStunt();
       }
     }
-    // Active mission.
     const a = m.active;
     if (!a) return;
     a.timeLeft -= dt;
@@ -250,8 +253,15 @@ export function createMissions(scene, world, city, audio, hooks) {
       failMission('Out of time.');
       return;
     }
+    // One warning when the clock gets short — a missed deadline is the
+    // most common way to lose a job.
+    if (a.timeLeft <= 10 && !a.warned) {
+      a.warned = true;
+      banner('HURRY', '10 seconds left on ' + a.def.name);
+      audio.blip();
+    }
     const pp = world.playerPos();
-    if (a.def.id === 'race' || a.def.id === 'trial' || a.def.id === 'boat' || a.def.id === 'getaway') {
+    if (a.def.id === 'race' || a.def.id === 'trial' || a.def.id === 'boat' || a.def.id === 'getaway' || a.def.id === 'neon') {
       const ring = m.rings[0];
       if (ring) {
         const d = Math.hypot(pp.x - ring.x, pp.z - ring.z);
@@ -268,7 +278,6 @@ export function createMissions(scene, world, city, audio, hooks) {
         }
       }
       if (a.def.id === 'boat' && !world.player.inBoat && a.ringIdx > 0) {
-        // Fell out of the boat mid-run: fail gently after a grace period.
         a.boatGrace = (a.boatGrace ?? 0) + dt;
         if (a.boatGrace > 10) failMission('You lost the boat.');
       } else a.boatGrace = 0;
@@ -279,7 +288,6 @@ export function createMissions(scene, world, city, audio, hooks) {
         return;
       }
       if (a.stage === 0) {
-        // Ram / shoot it until it stops.
         if (t.health <= 150) {
           t.loop = null;
           t.cruise = 0;
@@ -308,7 +316,6 @@ export function createMissions(scene, world, city, audio, hooks) {
       } else if (a.stage === 2) {
         const d = Math.hypot(pp.x - DROP_OFF.x, pp.z - DROP_OFF.z);
         if (d < 6) {
-          // Truck despawns (Lena's crew takes it).
           world.truck = null;
           const vi = world.vehicles.indexOf(t);
           if (vi >= 0) world.vehicles.splice(vi, 1);
@@ -318,7 +325,6 @@ export function createMissions(scene, world, city, audio, hooks) {
         }
       }
     }
-    // HUD timer.
     if (hooks.onMissionTick) hooks.onMissionTick(a.timeLeft, a.def);
   };
 

@@ -1,7 +1,8 @@
-// Shops: cash finally does something. Two store fronts with beacon markers —
-// AMMO-NATION (ammo + armor, on foot) and MOD SHOP (car repair + nitro, in
-// a car). Walk or drive into the marker and the shop opens. Plain DOM
-// overlay, no assets.
+// Shops for Neon Bay Heat: cash finally does something. Three store fronts
+// with beacon markers — AMMO-NATION (ammo + armor, on foot), MOD SHOP (car
+// repair + nitro, in a car) and PAWN SHOP (cheap health + ammo, on foot).
+// Walk or drive into the marker and the shop opens. Plain DOM overlay,
+// no assets.
 import * as THREE from '../vendor/three.module.min.js';
 import { WEAPONS } from './world.js';
 
@@ -75,6 +76,27 @@ const STORES = [
       },
     ],
   },
+  {
+    id: 'pawn', name: 'PAWN SHOP', x: -115, z: 125, color: 0xc86bff, css: '#c86bff',
+    blurb: 'Second-hand everything. Cheap, and it works. Mostly.',
+    items: [
+      {
+        id: 'bandage', name: 'First aid +50 HP', price: 120,
+        canBuy: (w) => w.player.health < 100,
+        apply: (w) => { w.player.health = Math.min(100, w.player.health + 50); },
+      },
+      {
+        id: 'pistol2', name: 'Pistol ammo +60 (used)', price: 100,
+        canBuy: (w) => w.player.ammo[1] < WEAPONS[1].ammo * 2,
+        apply: (w) => { w.player.ammo[1] = Math.min(WEAPONS[1].ammo * 2, w.player.ammo[1] + 60); },
+      },
+      {
+        id: 'vest', name: 'Kevlar vest +50', price: 200,
+        canBuy: (w) => w.player.armor < 100,
+        apply: (w) => { w.player.armor = Math.min(100, w.player.armor + 50); },
+      },
+    ],
+  },
 ];
 
 export function createShop(scene, world, city, audio, hooks) {
@@ -124,7 +146,6 @@ export function createShop(scene, world, city, audio, hooks) {
     const store = s.openStore;
     const root = document.getElementById('hud');
     if (!root) return;
-    // Rebuild the panel content (cash and button states change on purchase).
     s.overlay.innerHTML = '';
     const title = document.createElement('div');
     title.textContent = store.name;
@@ -148,7 +169,6 @@ export function createShop(scene, world, city, audio, hooks) {
       const btn = document.createElement('button');
       const afford = world.cash >= item.price;
       const usable = item.canBuy(world);
-      // Car items need a car: say so instead of a misleading "MAX".
       const needsCar = (item.id === 'repair' || item.id === 'nitro') && !world.player.vehicle;
       btn.textContent = needsCar ? 'NO CAR' : (!usable ? 'MAX' : '$' + item.price);
       btn.disabled = needsCar || !afford || !usable;
@@ -168,6 +188,7 @@ export function createShop(scene, world, city, audio, hooks) {
       + 'color:#fff;background:#333;border:1px solid #888;border-radius:6px;padding:7px 20px;cursor:pointer;';
     close.addEventListener('click', (e) => {
       e.stopPropagation();
+      audio.blip();
       closeShop();
     });
     s.overlay.appendChild(close);
@@ -189,7 +210,7 @@ export function createShop(scene, world, city, audio, hooks) {
     audio.blip();
   }
 
-  // Minimap markers for the two store fronts.
+  // Minimap markers for the three store fronts.
   s.getMarkers = () => STORES.map((st) => ({ x: st.x, z: st.z, color: st.css, kind: 'shop' }));
   s.isOpen = () => !!s.openStore;
 
@@ -202,7 +223,6 @@ export function createShop(scene, world, city, audio, hooks) {
     }
     const pp = world.playerPos();
     if (s.openStore) {
-      // Close when the player walks/drives away from the store.
       const d = Math.hypot(pp.x - s.openStore.x, pp.z - s.openStore.z);
       if (d > CLOSE_RADIUS) closeShop();
       return;
@@ -212,7 +232,6 @@ export function createShop(scene, world, city, audio, hooks) {
     for (const store of STORES) {
       const d = Math.hypot(pp.x - store.x, pp.z - store.z);
       if (d > OPEN_RADIUS) continue;
-      // On foot, or in a car that is nearly stopped (drive-in garage).
       if (!p.vehicle) {
         openShop(store);
         return;

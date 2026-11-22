@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Neon Bay Heat — a free open-world crime game: drive, steal cars, outrun the police and run six jobs for Lena across Neon Bay.">
 <title>Neon Bay Heat — open-world crime game</title>
 <link rel="icon" href="data:,">
 <style>
@@ -11,6 +12,8 @@
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #hud { position: fixed; inset: 0; pointer-events: none; font-family: 'Arial Black', Arial, sans-serif; color: #fff; z-index: 5; }
   #hud .hidden { display: none !important; }
+
+  /* top-left vitals */
   .vitals { position: absolute; top: 14px; left: 16px; width: 240px; }
   .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .bar-label { font-size: 11px; letter-spacing: 1px; text-shadow: 0 2px 4px rgba(0,0,0,.8); width: 52px; }
@@ -19,27 +22,38 @@
   .bar.hp .fill { background: linear-gradient(90deg, #37e05a, #9dff57); }
   .bar.hp .fill.low { background: linear-gradient(90deg, #ff2e2e, #ff7a3d); }
   .bar.armor .fill { background: linear-gradient(90deg, #5aa2ff, #37e0c8); }
+  .jobs-line { font-size: 11px; letter-spacing: 1px; color: #ffd166; text-shadow: 0 2px 4px rgba(0,0,0,.8); margin-top: 2px; }
+
+  /* top-right cash + wanted */
   .top-right { position: absolute; top: 12px; right: 16px; text-align: right; }
   .cash { font-size: 30px; color: #7dff9e; text-shadow: 0 2px 0 #000, 0 0 14px rgba(125,255,158,.5); font-style: italic; }
   .stars { font-size: 26px; letter-spacing: 3px; margin-top: 2px; }
   .stars .star { color: rgba(255,255,255,.18); text-shadow: 0 2px 4px rgba(0,0,0,.8); transition: color .15s; }
   .stars .star.on { color: #ffd166; text-shadow: 0 0 12px rgba(255,209,102,.9); animation: starpulse 1s infinite; }
   @keyframes starpulse { 50% { transform: scale(1.15); } }
+
+  /* objective + banners + toast */
   .objective { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); max-width: 46%; text-align: center; font-size: 14px; font-style: italic; color: #ffe9f6; text-shadow: 0 2px 6px #000; background: rgba(0,0,0,.35); padding: 6px 14px; border-radius: 4px; }
   .banner { position: absolute; top: 22%; left: 50%; transform: translateX(-50%); text-align: center; animation: bannerin .3s ease-out; }
   @keyframes bannerin { from { opacity: 0; transform: translateX(-50%) scale(1.15); } }
   .banner-title { font-size: 52px; font-style: italic; color: #ff5da2; text-shadow: 0 3px 0 #000, 0 0 26px rgba(255,93,162,.8); letter-spacing: 2px; }
   .banner-sub { font-size: 17px; color: #fff; text-shadow: 0 2px 6px #000; margin-top: 4px; }
   .toast { position: absolute; bottom: 24%; left: 50%; transform: translateX(-50%); font-size: 15px; background: rgba(0,0,0,.6); border: 1px solid rgba(255,93,162,.6); padding: 8px 18px; border-radius: 4px; color: #ffe9f6; }
+
+  /* bottom-left minimap */
   .map-wrap { position: absolute; left: 16px; bottom: 16px; }
   .minimap { display: block; border-radius: 50%; box-shadow: 0 0 0 3px rgba(255,93,162,.55), 0 4px 18px rgba(0,0,0,.6); background: #14141f; }
   .clock { position: absolute; top: -24px; left: 0; font-size: 15px; color: #fff; text-shadow: 0 2px 4px #000; }
+
+  /* bottom-right driving readout */
   .bottom-right { position: absolute; right: 16px; bottom: 16px; text-align: right; }
   .weapon { font-size: 19px; text-shadow: 0 2px 4px #000; color: #ffe9f6; }
   .speed { font-size: 44px; font-style: italic; color: #fff; text-shadow: 0 3px 0 #000, 0 0 18px rgba(55,224,200,.6); line-height: 1; margin-top: 6px; }
   .speed span { font-size: 16px; }
   .veh-name { font-size: 14px; color: #9fe8ff; margin-top: 2px; }
   .radio { font-size: 14px; color: #ffd166; text-shadow: 0 2px 4px #000; margin-top: 6px; }
+
+  /* crosshair + damage + hint */
   .crosshair { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; transform: translate(-50%,-50%); }
   .crosshair::before, .crosshair::after { content: ''; position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 4px #000; }
   .crosshair::before { left: 12px; top: 0; width: 2px; height: 26px; }
@@ -50,6 +64,8 @@
   @keyframes lowhp { 50% { opacity: .35; } }
   .hint { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); font-family: Arial, sans-serif; font-size: 12px; color: rgba(255,255,255,.75); text-shadow: 0 1px 3px #000; background: rgba(0,0,0,.35); padding: 5px 12px; border-radius: 4px; white-space: nowrap; }
   .hint b { color: #ffd166; }
+
+  /* overlays: title / end / pause */
   .title { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: linear-gradient(180deg, rgba(10,10,30,.25) 0%, rgba(10,10,30,.55) 55%, rgba(40,5,35,.78) 100%); pointer-events: auto; }
   .title-kicker { font-size: 20px; letter-spacing: 8px; color: #9fe8ff; text-shadow: 0 2px 8px #000; }
   .title-logo { font-size: 92px; line-height: .95; font-style: italic; color: #fff; text-shadow: 0 4px 0 #ff2e88, 0 0 42px rgba(255,46,136,.9), 0 0 90px rgba(55,224,200,.7); margin: 10px 0 14px; }
@@ -65,6 +81,7 @@
   .pause { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,.6); pointer-events: auto; }
   .pause-title { font-size: 64px; font-style: italic; color: #fff; text-shadow: 0 3px 0 #000; }
   .pause-sub { font-family: Arial, sans-serif; font-size: 15px; color: #ddd; margin-top: 8px; }
+
   @media (max-width: 760px) {
     .title-logo { font-size: 54px; }
     .banner-title { font-size: 34px; }

@@ -1,17 +1,20 @@
-// Taxi fares: steal a City Cab and the city flags you down. Pick up the
-// customer, drop them off before the meter runs out, get paid — plus a tip
-// for a fast ride. The fare is the game's most iconic side activity and it
-// gives the player a reason to drive a taxi instead of stealing it and
-// leaving it. Plain three.js primitives + DOM banners; no assets.
+// Taxi fares for Neon Bay Heat: steal a City Cab and the city flags you
+// down. Pick up the customer, drop them off before the meter runs out, get
+// paid — plus a tip for a fast ride. The fare is the game's most iconic
+// side activity and it gives the player a reason to drive a taxi instead
+// of stealing it and leaving it. Plain three.js primitives + DOM banners;
+// no assets.
 import * as THREE from '../vendor/three.module.min.js';
 import { fmtTime } from './util.js';
 
 const FARE_SPOTS = [
   { name: 'Hotel Palma', x: 165, z: -100 },
+  { name: 'Pier 9', x: 185, z: 10 },
   { name: 'Port entrance', x: -190, z: 130 },
   { name: 'Hospital', x: -70, z: 80 },
   { name: 'The Park', x: 75, z: 75 },
   { name: 'Downtown', x: -80, z: -80 },
+  { name: 'Casino Solmar', x: -160, z: -160 },
   { name: 'Ocean Beach', x: 185, z: -150 },
 ];
 
@@ -90,8 +93,6 @@ export function createTaxi(scene, world, city, audio, hooks) {
     if (t.fare && t.fare.ped) dropPed(t.fare.ped, world.playerPos().x + 3, world.playerPos().z + 3);
     t.fare = null;
     hideBeacon();
-    // No objective reset needed: main.js falls back from fareText() to the
-    // mission/welcome objective on its own when the fare ends.
     if (msg) banner('FARE OVER', msg);
   }
 
@@ -129,22 +130,25 @@ export function createTaxi(scene, world, city, audio, hooks) {
 
   t.update = (dt) => {
     t.time += dt;
+    // The fare beacon spins and bobs so it reads as a live target, not a
+    // static prop.
+    if (beacon.group.visible) {
+      beacon.marker.rotation.y += dt * 2.4;
+      beacon.marker.position.y = 3.4 + Math.sin(t.time * 2.6) * 0.5;
+    }
     if (!t.fare) return;
     const f = t.fare;
     const p = world.player;
-    // Fare ends if the player is out of the taxi or down.
     if (p.health <= 0 || !p.vehicle || p.vehicle.def.name !== 'City Cab') {
       endFare('You left the cab — fare cancelled.');
       return;
     }
-    // Beacon follows the customer until they get in, then marks the drop-off.
     if (f.phase === 'pickup' && f.ped) {
       beacon.group.position.set(f.ped.pos.x, 0, f.ped.pos.z);
       beacon.marker.rotation.y += dt * 2.2;
       beacon.marker.position.y = 3.4 + Math.sin(t.time * 2.4) * 0.5;
       const d = Math.hypot(p.vehicle.pos.x - f.ped.pos.x, p.vehicle.pos.z - f.ped.pos.z);
       if (d < 5) {
-        // Customer gets in: hide them, pick a destination, start the meter.
         f.ped.riding = true;
         f.ped.parts.group.visible = false;
         f.dest = pickDestination(f.ped.pos.x, f.ped.pos.z);
@@ -165,7 +169,6 @@ export function createTaxi(scene, world, city, audio, hooks) {
       beacon.marker.position.y = 3.4 + Math.sin(t.time * 2.4) * 0.5;
       const d = Math.hypot(p.vehicle.pos.x - f.dest.x, p.vehicle.pos.z - f.dest.z);
       if (d < 6) {
-        // Delivered: fare + a tip for a fast ride.
         const tip = f.timeLeft > f.timeLimit / 2 ? 25 : 0;
         const total = f.amount + tip;
         world.cash += total;
